@@ -32,7 +32,7 @@ const DRAWER_ICONS: Record<DashboardTab, React.ReactNode> = {
 };
 
 export function MobileDrawer({ open, onClose }: MobileDrawerProps) {
-  const { activeTab, setActiveTab, setViewMode, profile } = useApp();
+  const { activeTab, navigateProtected, openAuthModal, firebaseUser, profile } = useApp();
 
   if (!open) return null;
 
@@ -45,7 +45,7 @@ export function MobileDrawer({ open, onClose }: MobileDrawerProps) {
       />
       <div className="fixed inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-white shadow-2xl">
         <div className="flex h-14 items-center justify-between border-b border-violet-100 px-4">
-          <BrandLogo showTagline size="sm" onClick={() => { setActiveTab('home'); onClose(); }} />
+          <BrandLogo showTagline size="sm" onClick={() => { navigateProtected('home'); onClose(); }} />
           <button
             type="button"
             onClick={onClose}
@@ -57,8 +57,12 @@ export function MobileDrawer({ open, onClose }: MobileDrawerProps) {
         </div>
 
         <div className="border-b border-slate-100 px-4 py-3">
-          <p className="text-sm font-semibold text-slate-900">{profile?.fullName ?? 'Demo Customer'}</p>
-          <p className="text-xs text-slate-500">{profile?.tierLabel ?? 'Customer Preview'}</p>
+          <p className="text-sm font-semibold text-slate-900">
+            {firebaseUser ? (profile?.fullName ?? 'Account') : 'Guest Visitor'}
+          </p>
+          <p className="text-xs text-slate-500">
+            {firebaseUser ? (profile?.tierLabel ?? 'Customer Account') : 'Sign in to place orders & add funds'}
+          </p>
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto p-3" aria-label="Drawer navigation">
@@ -69,8 +73,8 @@ export function MobileDrawer({ open, onClose }: MobileDrawerProps) {
                 key={item.id}
                 type="button"
                 onClick={() => {
-                  setActiveTab(item.id);
                   onClose();
+                  navigateProtected(item.id);
                 }}
                 className={`flex h-11 w-full items-center gap-3 rounded-xl px-3.5 text-sm font-medium transition-colors ${
                   isActive
@@ -87,19 +91,21 @@ export function MobileDrawer({ open, onClose }: MobileDrawerProps) {
           })}
         </nav>
 
-        <div className="border-t border-slate-100 p-3">
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              setViewMode('landing');
-            }}
-            className="flex h-11 w-full items-center gap-3 rounded-xl px-3.5 text-sm font-medium text-violet-700 hover:bg-violet-50"
-          >
-            <Globe className="h-4 w-4" />
-            <span>View Public Landing Page</span>
-          </button>
-        </div>
+        {!firebaseUser && (
+          <div className="border-t border-slate-100 p-3">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                openAuthModal('login');
+              }}
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-violet-50 px-3.5 text-sm font-bold text-violet-700 hover:bg-violet-100"
+            >
+              <Globe className="h-4 w-4" />
+              <span>Sign In / Register</span>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

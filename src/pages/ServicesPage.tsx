@@ -31,15 +31,15 @@ export function ServicesPage() {
       </div>
 
       {/* Platform Filter Tabs */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 sm:pb-0">
           <button
             type="button"
             onClick={() => setFilterPlatform('all')}
-            className={`h-9 rounded-xl px-3.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+            className={`h-8 rounded-xl px-3 text-xs font-semibold transition-all duration-200 active:scale-[0.98] whitespace-nowrap shrink-0 ${
               filterPlatform === 'all'
-                ? 'bg-violet-700 text-white'
-                : 'bg-white text-slate-700 border border-slate-200 hover:border-violet-200'
+                ? 'bg-violet-700 text-white shadow-xs'
+                : 'bg-white text-slate-700 border border-slate-200 hover:border-violet-300 hover:shadow-2xs'
             }`}
           >
             All Platforms
@@ -51,10 +51,10 @@ export function ServicesPage() {
                 key={plat.id}
                 type="button"
                 onClick={() => setFilterPlatform(plat.id)}
-                className={`inline-flex h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                className={`inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold transition-all duration-200 active:scale-[0.98] whitespace-nowrap shrink-0 ${
                   active
-                    ? 'bg-violet-700 text-white'
-                    : 'bg-white text-slate-700 border border-slate-200 hover:border-violet-200'
+                    ? 'bg-violet-700 text-white shadow-xs'
+                    : 'bg-white text-slate-700 border border-slate-200 hover:border-violet-300 hover:shadow-2xs'
                 }`}
               >
                 <PlatformIcon platform={plat.id} size="xs" />
@@ -65,22 +65,22 @@ export function ServicesPage() {
         </div>
 
         <div className="relative sm:w-64">
-          <Search className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
           <input
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter services..."
-            className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+            className="h-9 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3.5 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 shadow-2xs transition-colors focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
           />
         </div>
       </div>
 
       {/* Services Cards */}
       {isLoading && services.length === 0 ? (
-        <div className="grid gap-3.5 md:grid-cols-2">
-          <div className="h-36 rounded-2xl bg-slate-200/70 animate-pulse" />
-          <div className="h-36 rounded-2xl bg-slate-200/70 animate-pulse" />
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="h-32 rounded-2xl bg-slate-200/70 animate-pulse" />
+          <div className="h-32 rounded-2xl bg-slate-200/70 animate-pulse" />
         </div>
       ) : filtered.length === 0 ? (
         <div className="rounded-2xl border border-slate-200/80 bg-white p-8 text-center">
@@ -90,31 +90,33 @@ export function ServicesPage() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-3.5 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2">
           {filtered.map((srv) => (
           <div
             key={srv.id}
-            className="flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-4 sm:p-5 shadow-xs"
+            className="group flex flex-col justify-between rounded-2xl border border-slate-200/80 bg-white p-3.5 sm:p-4 shadow-2xs transition-all duration-200 hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-md hover:shadow-violet-950/5"
           >
             <div>
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <PlatformIcon platform={srv.categoryId} size="sm" />
-                  <h2 className="font-display text-sm sm:text-base font-bold text-slate-900 leading-snug">
+              <div className="flex items-start justify-between gap-2.5">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="transition-transform duration-200 group-hover:scale-105">
+                    <PlatformIcon platform={srv.categoryId} size="sm" />
+                  </span>
+                  <h2 className="font-display text-xs sm:text-sm font-bold text-slate-900 leading-snug">
                     {srv.name}
                   </h2>
                 </div>
-                <span className="font-mono text-sm font-extrabold text-violet-800 whitespace-nowrap tabular-nums shrink-0">
+                <span className="font-mono text-xs sm:text-sm font-extrabold text-violet-800 whitespace-nowrap tabular-nums shrink-0">
                   {currencySymbol}
                   {srv.ratePerThousand.toFixed(2)} / 1K
                 </span>
               </div>
 
-              <p className="mt-2.5 text-xs sm:text-sm text-slate-600 leading-relaxed">{srv.description}</p>
+              <p className="mt-2 text-xs text-slate-600 leading-relaxed line-clamp-2">{srv.description}</p>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
-              <div className="flex flex-wrap items-center gap-2.5 text-[11px] font-medium text-slate-500 tabular-nums">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-slate-500 tabular-nums">
                 {srv.serviceType && (
                   <>
                     <span className="rounded-md bg-violet-50 px-2 py-0.5 font-semibold text-violet-700">
@@ -139,8 +141,8 @@ export function ServicesPage() {
 
               <button
                 type="button"
-                onClick={() => selectPlatformForOrder(srv.categoryId)}
-                className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-violet-50 px-3.5 text-xs font-bold text-violet-800 transition-colors hover:bg-violet-700 hover:text-white whitespace-nowrap"
+                onClick={() => selectPlatformForOrder(srv.categoryId, srv.id)}
+                className="inline-flex h-8 items-center gap-1 rounded-xl bg-violet-50 px-3 text-xs font-bold text-violet-800 transition-all duration-200 hover:bg-violet-700 hover:text-white hover:shadow-xs active:scale-[0.97] whitespace-nowrap"
               >
                 <span>Order</span>
                 <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />

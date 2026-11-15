@@ -31,7 +31,11 @@ export function NewOrderCard() {
     setSelectedPlatform,
     placeDemoOrder,
     wallet,
-    setActiveTab,
+    navigateProtected,
+    firebaseUser,
+    requireAuthForOrder,
+    orderDraft,
+    consumeOrderDraft,
     isLoading,
     systemSettings,
   } = useApp();
@@ -53,6 +57,31 @@ export function NewOrderCard() {
   useEffect(() => {
     attemptKeyRef.current = '';
   }, [selectedPlatform, selectedServiceId, link, quantityInput]);
+
+  useEffect(() => {
+    if (!orderDraft) return;
+    if (orderDraft.categoryId === selectedPlatform) {
+      if (orderDraft.serviceId) {
+        setSelectedServiceId(orderDraft.serviceId);
+        if (!orderDraft.quantity) {
+          const found = categoryServices.find((s) => s.id === orderDraft.serviceId);
+          if (found) {
+            const current = Number(quantityInput) || 0;
+            if (current < found.minQuantity || current > found.maxQuantity) {
+              setQuantityInput(String(Math.min(found.maxQuantity, Math.max(found.minQuantity, 1000))));
+            }
+          }
+        }
+      }
+      if (orderDraft.link) {
+        setLink(orderDraft.link);
+      }
+      if (orderDraft.quantity) {
+        setQuantityInput(orderDraft.quantity);
+      }
+      consumeOrderDraft();
+    }
+  }, [orderDraft, selectedPlatform, categoryServices, quantityInput, consumeOrderDraft]);
 
   useEffect(() => {
     if (categoryServices.length > 0 && !categoryServices.some((s) => s.id === selectedServiceId)) {
@@ -106,10 +135,19 @@ export function NewOrderCard() {
   const outOfRange =
     Boolean(activeService) &&
     (numericQuantity < activeService.minQuantity || numericQuantity > activeService.maxQuantity);
-  const insufficientBalance = totalCost > wallet.balance;
+  const insufficientBalance = Boolean(firebaseUser) && totalCost > wallet.balance;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!firebaseUser) {
+      requireAuthForOrder({
+        categoryId: selectedPlatform,
+        serviceId: activeService?.id ?? '',
+        link,
+        quantity: quantityInput,
+      });
+      return;
+    }
     if (!activeService || submittingRef.current) return;
     submittingRef.current = true;
     setIsSubmitting(true);
@@ -140,20 +178,20 @@ export function NewOrderCard() {
     <section
       id="new-order-card"
       aria-labelledby="new-order-heading"
-      className="overflow-hidden rounded-3xl border border-violet-100 bg-white shadow-sm shadow-violet-950/5"
+      className="overflow-hidden rounded-2xl border border-violet-100 bg-white shadow-sm shadow-violet-950/5 transition-shadow duration-200 hover:shadow-md hover:shadow-violet-950/8"
     >
       {/* Card Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-gradient-to-r from-[#5B21B6] via-[#7C3AED] to-[#6D28D9] px-5 py-3.5 text-white">
-        <div className="flex items-center gap-2.5">
-          <ShoppingCart className="h-5 w-5" aria-hidden="true" />
-          <h2 id="new-order-heading" className="font-display text-base sm:text-lg font-bold tracking-tight">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-gradient-to-r from-[#5B21B6] via-[#7C3AED] to-[#6D28D9] px-4 py-2.5 sm:px-5 sm:py-3 text-white">
+        <div className="flex items-center gap-2">
+          <ShoppingCart className="h-4 w-4 sm:h-5 sm:w-5" aria-hidden="true" />
+          <h2 id="new-order-heading" className="font-display text-sm sm:text-base font-bold tracking-tight">
             New Order
           </h2>
         </div>
 
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-950/30 px-3 py-1 text-xs font-semibold text-white whitespace-nowrap">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-950/30 px-2.5 py-0.5 text-[11px] font-semibold text-white whitespace-nowrap">
           <span>{activeService?.deliverySpeed ?? 'Instant Delivery'}</span>
-          <Zap className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+          <Zap className="h-3 w-3 text-amber-300" aria-hidden="true" />
         </span>
       </div>
 
@@ -174,11 +212,11 @@ export function NewOrderCard() {
           </p>
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="space-y-4 p-4 sm:p-6">
-          <div className="grid gap-4 sm:grid-cols-2">
+        <form noValidate={!firebaseUser} onSubmit={handleSubmit} className="space-y-3.5 p-3.5 sm:p-5">
+          <div className="grid gap-3 sm:grid-cols-2">
             {/* Select Category */}
             <div>
-              <label htmlFor="order-category" className="block text-xs font-semibold text-slate-700 mb-1.5">
+              <label htmlFor="order-category" className="block text-[11px] sm:text-xs font-semibold text-slate-700 mb-1">
                 Select Category
               </label>
               <div className="relative flex items-center">
@@ -189,7 +227,7 @@ export function NewOrderCard() {
                   id="order-category"
                   value={selectedPlatform}
                   onChange={(e) => setSelectedPlatform(e.target.value as PlatformId)}
-                  className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-slate-50/70 pl-10 pr-9 text-sm font-medium text-slate-900 transition-colors focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                  className="h-10 w-full appearance-none rounded-xl border border-slate-200 bg-slate-50/70 pl-9 pr-8 text-xs sm:text-sm font-medium text-slate-900 shadow-2xs transition-all duration-200 hover:border-violet-300 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                 >
                   {platforms.map((platform) => (
                     <option key={platform.id} value={platform.id}>
@@ -207,7 +245,7 @@ export function NewOrderCard() {
                   )}
                 </select>
                 <ChevronDown
-                  className="pointer-events-none absolute right-3 h-4 w-4 text-slate-400"
+                  className="pointer-events-none absolute right-2.5 h-4 w-4 text-slate-400"
                   aria-hidden="true"
                 />
               </div>
@@ -215,7 +253,7 @@ export function NewOrderCard() {
 
             {/* Select Service */}
             <div>
-              <label htmlFor="order-service" className="block text-xs font-semibold text-slate-700 mb-1.5">
+              <label htmlFor="order-service" className="block text-[11px] sm:text-xs font-semibold text-slate-700 mb-1">
                 Select Service
               </label>
               <div className="relative flex items-center">
@@ -227,7 +265,7 @@ export function NewOrderCard() {
                   value={activeService?.id ?? ''}
                   disabled={categoryServices.length === 0}
                   onChange={(e) => handleSelectService(e.target.value)}
-                  className="h-11 w-full appearance-none rounded-xl border border-slate-200 bg-slate-50/70 pl-10 pr-9 text-sm font-medium text-slate-900 transition-colors focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20 truncate disabled:opacity-60"
+                  className="h-10 w-full appearance-none rounded-xl border border-slate-200 bg-slate-50/70 pl-9 pr-8 text-xs sm:text-sm font-medium text-slate-900 shadow-2xs transition-all duration-200 hover:border-violet-300 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20 truncate disabled:opacity-60"
                 >
                   {categoryServices.length === 0 ? (
                     <option value="">No active services in this category</option>
@@ -241,7 +279,7 @@ export function NewOrderCard() {
                   )}
                 </select>
                 <ChevronDown
-                  className="pointer-events-none absolute right-3 h-4 w-4 text-slate-400"
+                  className="pointer-events-none absolute right-2.5 h-4 w-4 text-slate-400"
                   aria-hidden="true"
                 />
               </div>
@@ -261,11 +299,11 @@ export function NewOrderCard() {
             <>
               {/* Link Input */}
               <div>
-                <label htmlFor="order-link" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                <label htmlFor="order-link" className="block text-[11px] sm:text-xs font-semibold text-slate-700 mb-1">
                   Link
                 </label>
                 <div className="relative flex items-center">
-                  <Link2 className="pointer-events-none absolute left-3.5 h-4 w-4 text-violet-600" aria-hidden="true" />
+                  <Link2 className="pointer-events-none absolute left-3 h-4 w-4 text-violet-600" aria-hidden="true" />
                   <input
                     id="order-link"
                     type="url"
@@ -273,15 +311,15 @@ export function NewOrderCard() {
                     value={link}
                     onChange={(e) => setLink(e.target.value)}
                     placeholder={linkPlaceholder}
-                    className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50/70 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 transition-colors focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                    className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50/70 pl-9 pr-3.5 text-xs sm:text-sm text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all duration-200 hover:border-violet-300 focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
                   />
                 </div>
               </div>
 
           {/* Quantity + Presets */}
           <div>
-            <div className="flex items-center justify-between gap-2 mb-1.5">
-              <label htmlFor="order-quantity" className="block text-xs font-semibold text-slate-700">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label htmlFor="order-quantity" className="block text-[11px] sm:text-xs font-semibold text-slate-700">
                 Quantity
               </label>
               {activeService && (
@@ -290,9 +328,9 @@ export function NewOrderCard() {
                 </span>
               )}
             </div>
-            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <div className="relative flex-1">
-                <Hash className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-violet-600" aria-hidden="true" />
+                <Hash className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-violet-600" aria-hidden="true" />
                 <input
                   id="order-quantity"
                   type="number"
@@ -300,15 +338,15 @@ export function NewOrderCard() {
                   max={activeService?.maxQuantity ?? 1000000}
                   value={quantityInput}
                   onChange={(e) => setQuantityInput(e.target.value)}
-                  className={`h-11 w-full rounded-xl border pl-10 pr-4 text-sm font-semibold text-slate-900 tabular-nums transition-colors focus:bg-white focus:outline-none focus:ring-2 ${
+                  className={`h-10 w-full rounded-xl border pl-9 pr-3.5 text-xs sm:text-sm font-semibold text-slate-900 tabular-nums shadow-2xs transition-all duration-200 focus:bg-white focus:outline-none focus:ring-2 ${
                     outOfRange
                       ? 'border-rose-300 bg-rose-50/50 focus:border-rose-500 focus:ring-rose-500/20'
-                      : 'border-slate-200 bg-slate-50/70 focus:border-violet-500 focus:ring-violet-500/20'
+                      : 'border-slate-200 bg-slate-50/70 hover:border-violet-300 focus:border-violet-500 focus:ring-violet-500/20'
                   }`}
                 />
               </div>
 
-              <div className="grid grid-cols-4 gap-2 sm:w-auto">
+              <div className="grid grid-cols-4 gap-1.5 sm:w-auto">
                 {QUANTITY_PRESETS.map((preset) => {
                   const isDisabled =
                     !activeService ||
@@ -326,12 +364,12 @@ export function NewOrderCard() {
                           ? `Requires ${activeService.minQuantity.toLocaleString()}–${activeService.maxQuantity.toLocaleString()}`
                           : `Set quantity to ${preset.value}`
                       }
-                      className={`h-11 sm:h-10 rounded-xl px-3 text-xs font-bold transition-colors tabular-nums ${
+                      className={`h-9 sm:h-10 rounded-xl px-2.5 text-xs font-bold transition-all duration-200 tabular-nums active:scale-[0.97] ${
                         isDisabled
                           ? 'cursor-not-allowed bg-slate-100 text-slate-400 opacity-60'
                           : isSelected
                             ? 'bg-violet-700 text-white shadow-xs'
-                            : 'bg-violet-50 text-violet-800 hover:bg-violet-100'
+                            : 'bg-violet-50 text-violet-800 hover:bg-violet-100 hover:shadow-2xs'
                       }`}
                     >
                       {preset.label}
@@ -341,7 +379,7 @@ export function NewOrderCard() {
               </div>
             </div>
             {outOfRange && activeService && (
-              <p className="mt-1.5 text-[11px] font-semibold text-rose-600">
+              <p className="mt-1 text-[11px] font-semibold text-rose-600">
                 Quantity must stay between {activeService.minQuantity.toLocaleString()} and{' '}
                 {activeService.maxQuantity.toLocaleString()}.
               </p>
@@ -350,13 +388,13 @@ export function NewOrderCard() {
 
           {/* Service Information Panel (Strictly excludes provider secrets & cost price) */}
           {activeService && (
-            <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-3.5 sm:p-4 space-y-2.5">
+            <div className="rounded-xl border border-slate-200/80 bg-slate-50/80 p-3 sm:p-3.5 space-y-2 transition-colors duration-200 hover:border-violet-200/80">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Info className="h-4 w-4 text-violet-700 shrink-0" aria-hidden="true" />
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Info className="h-3.5 w-3.5 text-violet-700 shrink-0" aria-hidden="true" />
                   <h3 className="text-xs font-bold text-slate-900 truncate">{activeService.name}</h3>
                 </div>
-                <div className="flex items-center gap-2 text-[11px] font-semibold">
+                <div className="flex items-center gap-1.5 text-[10.5px] font-semibold">
                   <span className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-0.5 text-slate-700 border border-slate-200/80">
                     <Clock className="h-3 w-3 text-violet-600" aria-hidden="true" />
                     {activeService.averageTime}
@@ -370,11 +408,11 @@ export function NewOrderCard() {
                 </div>
               </div>
 
-              <p className="text-xs text-slate-600 leading-relaxed">
+              <p className="text-[11.5px] text-slate-600 leading-relaxed">
                 {activeService.description || 'High-retention delivery optimized for steady campaign performance.'}
               </p>
 
-              <div className="grid grid-cols-3 gap-2 rounded-xl bg-white p-2.5 border border-slate-100 text-[11px]">
+              <div className="grid grid-cols-3 gap-2 rounded-lg bg-white p-2 border border-slate-100 text-[11px]">
                 <div>
                   <span className="block text-slate-400">Minimum</span>
                   <span className="font-bold text-slate-800 tabular-nums">
@@ -396,15 +434,15 @@ export function NewOrderCard() {
                 </div>
               </div>
 
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[10.5px] text-slate-500 leading-snug">
                 <span className="font-semibold text-slate-700">Important Notes:</span> Keep the target account or post public until delivery completes. Avoid placing duplicate orders for the same link simultaneously.
               </p>
             </div>
           )}
 
           {insufficientBalance && activeService && (
-            <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-950">
-              <div className="flex items-start gap-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-950">
+              <div className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
                   <p className="font-semibold">
@@ -419,7 +457,7 @@ export function NewOrderCard() {
               </div>
               <button
                 type="button"
-                onClick={() => setActiveTab('funds')}
+                onClick={() => navigateProtected('funds')}
                 className="inline-flex h-8 items-center rounded-xl bg-violet-700 px-3 text-xs font-bold text-white shadow-xs hover:bg-violet-800 whitespace-nowrap"
               >
                 Add Funds
@@ -428,17 +466,17 @@ export function NewOrderCard() {
           )}
 
           {/* Pricing Summary + Place Order CTA */}
-          <div className="flex flex-col gap-3 rounded-2xl border border-violet-100 bg-violet-50/50 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-2.5 rounded-xl border border-violet-100 bg-violet-50/50 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="grid grid-cols-2 divide-x divide-violet-200/80 sm:flex sm:items-center sm:gap-6 sm:divide-x-0">
               <div className="pr-3 sm:pr-0">
                 <p className="text-[11px] font-medium text-slate-500">Service Price</p>
-                <p className="mt-0.5 font-display text-lg font-extrabold text-slate-900 tabular-nums">
+                <p className="mt-0.5 font-display text-base sm:text-lg font-extrabold text-slate-900 tabular-nums">
                   {currencySymbol} {serviceRate.toFixed(2)}
                 </p>
               </div>
               <div className="pl-4 sm:border-l sm:border-violet-200/80 sm:pl-6">
                 <p className="text-[11px] font-medium text-slate-500">Total Cost</p>
-                <p className="mt-0.5 font-display text-lg font-extrabold text-violet-800 tabular-nums">
+                <p className="mt-0.5 font-display text-base sm:text-lg font-extrabold text-violet-800 tabular-nums">
                   {currencySymbol} {totalCost.toFixed(2)}
                 </p>
               </div>
@@ -447,7 +485,7 @@ export function NewOrderCard() {
             <button
               type="submit"
               disabled={isSubmitting || !activeService || outOfRange || insufficientBalance}
-              className="inline-flex h-12 w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-600 px-6 text-sm font-bold text-white shadow-md shadow-violet-700/25 transition-all duration-150 hover:from-violet-800 hover:to-purple-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-55 whitespace-nowrap"
+              className="inline-flex h-10 sm:h-11 w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-600 px-5 text-xs sm:text-sm font-bold text-white shadow-md shadow-violet-700/20 transition-all duration-200 hover:from-violet-800 hover:to-purple-700 hover:shadow-lg hover:shadow-violet-700/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-55 whitespace-nowrap"
             >
               <span>{isSubmitting ? 'Placing Order...' : 'Place Order'}</span>
               <Rocket className="h-4 w-4" aria-hidden="true" />

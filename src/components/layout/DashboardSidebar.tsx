@@ -27,13 +27,13 @@ const ICON_MAP: Record<DashboardTab, React.ReactNode> = {
 };
 
 export function DashboardSidebar() {
-  const { activeTab, setActiveTab, setViewMode, wallet, systemSettings } = useApp();
+  const { activeTab, navigateProtected, openAuthModal, firebaseUser, wallet, systemSettings } = useApp();
   const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
 
   return (
     <aside className="hidden lg:flex lg:w-64 lg:shrink-0 lg:flex-col lg:border-r lg:border-violet-100 lg:bg-white">
       <div className="flex h-14 items-center border-b border-violet-100/80 px-5">
-        <BrandLogo showTagline size="sm" onClick={() => setActiveTab('home')} />
+        <BrandLogo showTagline size="sm" onClick={() => navigateProtected('home')} />
       </div>
 
       <div className="flex flex-1 flex-col justify-between p-4">
@@ -47,7 +47,7 @@ export function DashboardSidebar() {
             </p>
             <button
               type="button"
-              onClick={() => setActiveTab('funds')}
+              onClick={() => navigateProtected('funds')}
               className="mt-3 inline-flex h-8 w-full items-center justify-center rounded-xl bg-white/95 px-3 text-xs font-semibold text-violet-900 transition-colors hover:bg-white"
             >
               Add Funds &rarr;
@@ -61,7 +61,7 @@ export function DashboardSidebar() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => navigateProtected(item.id)}
                   className={`flex h-11 w-full items-center gap-3 rounded-xl px-3.5 text-sm font-medium transition-colors whitespace-nowrap ${
                     isActive
                       ? 'bg-violet-50 font-semibold text-violet-800'
@@ -78,16 +78,18 @@ export function DashboardSidebar() {
           </nav>
         </div>
 
-        <div className="border-t border-slate-100 pt-4">
-          <button
-            type="button"
-            onClick={() => setViewMode('landing')}
-            className="flex h-10 w-full items-center gap-2.5 rounded-xl px-3.5 text-xs font-medium text-slate-600 transition-colors hover:bg-violet-50 hover:text-violet-800"
-          >
-            <Globe className="h-4 w-4 text-slate-400" />
-            <span>Back to Public Landing</span>
-          </button>
-        </div>
+        {!firebaseUser && (
+          <div className="border-t border-slate-100 pt-4">
+            <button
+              type="button"
+              onClick={() => openAuthModal('login')}
+              className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-violet-50 px-3.5 text-xs font-bold text-violet-800 transition-colors hover:bg-violet-100"
+            >
+              <Globe className="h-4 w-4 text-violet-700" />
+              <span>Sign In / Register</span>
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );

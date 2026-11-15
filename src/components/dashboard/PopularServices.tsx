@@ -38,10 +38,10 @@ export function PopularServices() {
 
   return (
     <section aria-labelledby="popular-services-heading">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Flame className="h-5 w-5 text-orange-500" aria-hidden="true" />
-          <h2 id="popular-services-heading" className="font-display text-base sm:text-lg font-bold text-slate-900">
+      <div className="mb-2.5 flex items-center justify-between gap-2.5">
+        <div className="flex items-center gap-1.5">
+          <Flame className="h-4 w-4 text-orange-500" aria-hidden="true" />
+          <h2 id="popular-services-heading" className="font-display text-sm sm:text-base font-bold text-slate-900">
             Popular Services
           </h2>
         </div>
@@ -49,25 +49,25 @@ export function PopularServices() {
         <button
           type="button"
           onClick={() => setActiveTab('services')}
-          className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-3 text-xs font-semibold text-slate-700 border border-slate-200 transition-colors hover:border-violet-200 hover:text-violet-700 whitespace-nowrap"
+          className="inline-flex h-7 items-center gap-1 rounded-full bg-white px-2.5 text-[11px] font-semibold text-slate-700 border border-slate-200 transition-all duration-200 hover:border-violet-300 hover:text-violet-700 hover:shadow-xs whitespace-nowrap"
         >
           <span>View All</span>
-          <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+          <ArrowRight className="h-3 w-3" aria-hidden="true" />
         </button>
       </div>
 
       {isLoading && platforms.length === 0 ? (
-        <div className="grid grid-cols-4 gap-2 sm:grid-cols-8 sm:gap-3">
+        <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-8 sm:gap-2">
           {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="h-20 rounded-2xl bg-slate-200/70 animate-pulse" />
+            <div key={i} className="h-14 sm:h-16 rounded-xl bg-slate-200/70 animate-pulse" />
           ))}
         </div>
       ) : platforms.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-6 text-center text-xs text-slate-500">
+        <div className="rounded-xl border border-slate-200/80 bg-white p-5 text-center text-xs text-slate-500">
           No service categories are active yet.
         </div>
       ) : (
-        <div className="grid grid-cols-4 gap-2 sm:grid-cols-8 sm:gap-3">
+        <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-8 sm:gap-2">
           {corePlatforms.map((platform) => {
             const isSelected = selectedPlatform === platform.id;
             return (
@@ -75,14 +75,16 @@ export function PopularServices() {
                 key={platform.id}
                 type="button"
                 onClick={() => selectPlatformForOrder(platform.id)}
-                className={`flex flex-col items-center justify-center rounded-2xl border p-2.5 sm:p-3 transition-all duration-150 ${
+                className={`group flex flex-col items-center justify-center rounded-xl border px-1.5 py-2 sm:px-2 sm:py-2.5 transition-all duration-200 active:scale-[0.97] ${
                   isSelected
-                    ? 'border-violet-400 bg-violet-50/70 shadow-sm shadow-violet-500/10'
-                    : 'border-slate-200/80 bg-white hover:border-violet-200 hover:-translate-y-0.5'
+                    ? 'border-violet-400 bg-violet-50/80 shadow-sm shadow-violet-500/15 ring-1 ring-violet-400/30'
+                    : 'border-slate-200/80 bg-white shadow-2xs hover:border-violet-300 hover:-translate-y-0.5 hover:shadow-md hover:shadow-violet-900/5'
                 }`}
               >
-                <PlatformIcon platform={platform.id} size="md" />
-                <span className="mt-2 w-full truncate text-center text-[11px] font-semibold text-slate-800">
+                <span className="transition-transform duration-200 group-hover:scale-105">
+                  <PlatformIcon platform={platform.id} size="sm" />
+                </span>
+                <span className="mt-1.5 w-full truncate text-center text-[10.5px] sm:text-[11px] font-semibold text-slate-800 leading-tight">
                   {platform.shortName}
                 </span>
               </button>
@@ -92,14 +94,16 @@ export function PopularServices() {
           <button
             type="button"
             onClick={() => selectPlatformForOrder(linkedinId)}
-            className={`flex flex-col items-center justify-center rounded-2xl border p-2.5 sm:p-3 transition-all duration-150 ${
+            className={`group flex flex-col items-center justify-center rounded-xl border px-1.5 py-2 sm:px-2 sm:py-2.5 transition-all duration-200 active:scale-[0.97] ${
               selectedPlatform === linkedinId
-                ? 'border-violet-400 bg-violet-50/70 shadow-sm shadow-violet-500/10'
-                : 'border-slate-200/80 bg-white hover:border-violet-200 hover:-translate-y-0.5'
+                ? 'border-violet-400 bg-violet-50/80 shadow-sm shadow-violet-500/15 ring-1 ring-violet-400/30'
+                : 'border-slate-200/80 bg-white shadow-2xs hover:border-violet-300 hover:-translate-y-0.5 hover:shadow-md hover:shadow-violet-900/5'
             }`}
           >
-            <PlatformIcon platform={linkedinId} size="md" />
-            <span className="mt-2 w-full truncate text-center text-[11px] font-semibold text-slate-800">
+            <span className="transition-transform duration-200 group-hover:scale-105">
+              <PlatformIcon platform={linkedinId} size="sm" />
+            </span>
+            <span className="mt-1.5 w-full truncate text-center text-[10.5px] sm:text-[11px] font-semibold text-slate-800 leading-tight">
               LinkedIn
             </span>
           </button>
@@ -107,14 +111,16 @@ export function PopularServices() {
           <button
             type="button"
             onClick={() => selectPlatformForOrder(webTrafficId)}
-            className={`flex flex-col items-center justify-center rounded-2xl border p-2.5 sm:p-3 transition-all duration-150 ${
+            className={`group flex flex-col items-center justify-center rounded-xl border px-1.5 py-2 sm:px-2 sm:py-2.5 transition-all duration-200 active:scale-[0.97] ${
               selectedPlatform === webTrafficId
-                ? 'border-violet-400 bg-violet-50/70 shadow-sm shadow-violet-500/10'
-                : 'border-slate-200/80 bg-white hover:border-violet-200 hover:-translate-y-0.5'
+                ? 'border-violet-400 bg-violet-50/80 shadow-sm shadow-violet-500/15 ring-1 ring-violet-400/30'
+                : 'border-slate-200/80 bg-white shadow-2xs hover:border-violet-300 hover:-translate-y-0.5 hover:shadow-md hover:shadow-violet-900/5'
             }`}
           >
-            <PlatformIcon platform={webTrafficId} size="md" />
-            <span className="mt-2 w-full truncate text-center text-[11px] font-semibold text-slate-800">
+            <span className="transition-transform duration-200 group-hover:scale-105">
+              <PlatformIcon platform={webTrafficId} size="sm" />
+            </span>
+            <span className="mt-1.5 w-full truncate text-center text-[10.5px] sm:text-[11px] font-semibold text-slate-800 leading-tight">
               Web Traffic
             </span>
           </button>

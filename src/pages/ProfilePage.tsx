@@ -16,7 +16,7 @@ import { APP_CONFIG } from '../config/app.config';
 import { useApp } from '../context/AppContext';
 
 export function ProfilePage() {
-  const { profile, accountStatus, orderStats, wallet, setViewMode, updateUserProfile, logoutUser } =
+  const { profile, accountStatus, orderStats, wallet, goToHome, updateUserProfile, logoutUser } =
     useApp();
 
   const [name, setName] = useState(profile?.fullName ?? '');
@@ -134,11 +134,11 @@ export function ProfilePage() {
 
           <button
             type="button"
-            onClick={() => setViewMode('landing')}
+            onClick={goToHome}
             className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 text-xs font-bold text-violet-800 hover:bg-violet-100 whitespace-nowrap"
           >
             <Globe className="h-4 w-4" aria-hidden="true" />
-            <span>Public Landing Page</span>
+            <span>Home Page</span>
           </button>
         </div>
 

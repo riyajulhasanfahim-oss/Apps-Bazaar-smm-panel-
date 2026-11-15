@@ -13,7 +13,6 @@ import { DashboardHeader } from './components/layout/DashboardHeader';
 import { DashboardSidebar } from './components/layout/DashboardSidebar';
 import { MobileBottomNav } from './components/layout/MobileBottomNav';
 import { MobileDrawer } from './components/layout/MobileDrawer';
-import { LandingPage } from './pages/LandingPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
@@ -40,7 +39,7 @@ function AuthLoadingScreen() {
 }
 
 function AccountStatusRestrictedView() {
-  const { accountStatus, profile, logoutUser, setViewMode } = useApp();
+  const { accountStatus, profile, logoutUser, goToHome } = useApp();
   const isBlocked = accountStatus === 'blocked';
 
   return (
@@ -80,7 +79,7 @@ function AccountStatusRestrictedView() {
           </button>
           <button
             type="button"
-            onClick={() => setViewMode('landing')}
+            onClick={goToHome}
             className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-slate-200 px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
             Back to Home Page
@@ -100,12 +99,12 @@ function DashboardShell() {
     return <AuthLoadingScreen />;
   }
 
-  if (!firebaseUser) {
-    return <LoginPage />;
+  if (firebaseUser && accountStatus !== 'active') {
+    return <AccountStatusRestrictedView />;
   }
 
-  if (accountStatus !== 'active') {
-    return <AccountStatusRestrictedView />;
+  if (!firebaseUser && activeTab !== 'home' && activeTab !== 'services') {
+    return <LoginPage />;
   }
 
   const renderTabContent = () => {
@@ -178,7 +177,6 @@ function AppContent() {
 
   return (
     <>
-      {viewMode === 'landing' && <LandingPage />}
       {viewMode === 'login' && <LoginPage />}
       {viewMode === 'register' && <RegisterPage />}
       {viewMode === 'forgot-password' && <ForgotPasswordPage />}

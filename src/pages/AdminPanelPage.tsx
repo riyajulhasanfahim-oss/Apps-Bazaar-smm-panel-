@@ -38,6 +38,7 @@ import { SetupWizardModal } from '../components/admin/SetupWizardModal';
 export function AdminPanelPage() {
   const {
     setViewMode,
+    goToHome,
     firebaseUser,
     userRole,
     staffRole,
@@ -98,7 +99,7 @@ export function AdminPanelPage() {
             <div className="flex items-center gap-2.5">
               <button
                 type="button"
-                onClick={() => setViewMode('landing')}
+                onClick={goToHome}
                 className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 <ArrowLeft className="h-4 w-4" />
@@ -221,7 +222,7 @@ export function AdminPanelPage() {
               type="button"
               onClick={() => {
                 refreshCustomerData().catch(() => undefined);
-                setViewMode('landing');
+                goToHome();
               }}
               className="hidden sm:inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >

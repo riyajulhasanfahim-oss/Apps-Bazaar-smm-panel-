@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { BrandLogo } from '../components/common/BrandLogo';
 
 export function LoginPage() {
-  const { setViewMode, loginWithEmail, loginWithGoogle, systemSettings } = useApp();
+  const { setViewMode, goToHome, loginWithEmail, loginWithGoogle, systemSettings } = useApp();
   const brandName = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
 
   const [email, setEmail] = useState('');
@@ -53,10 +53,10 @@ export function LoginPage() {
     <div className="min-h-screen flex flex-col bg-[#F6F5FB] text-slate-900">
       <header className="border-b border-violet-100/80 bg-white/90 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <BrandLogo showTagline size="sm" onClick={() => setViewMode('landing')} />
+          <BrandLogo showTagline size="sm" onClick={goToHome} />
           <button
             type="button"
-            onClick={() => setViewMode('landing')}
+            onClick={goToHome}
             className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />

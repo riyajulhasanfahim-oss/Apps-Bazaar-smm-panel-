@@ -5,7 +5,7 @@ import { PlatformIcon } from '../common/PlatformIcon';
 import { StatusText } from '../common/StatusText';
 
 export function RecentOrdersCard() {
-  const { orders, setActiveTab, openOrderDetails, isLoading } = useApp();
+  const { orders, navigateProtected, openOrderDetails, isLoading } = useApp();
   const visibleOrders = orders.slice(0, 4);
 
   return (
@@ -20,7 +20,7 @@ export function RecentOrdersCard() {
 
         <button
           type="button"
-          onClick={() => setActiveTab('order')}
+          onClick={() => navigateProtected('order')}
           className="inline-flex h-8 items-center gap-1 rounded-full bg-white px-3 text-xs font-semibold text-slate-700 border border-slate-200 transition-colors hover:border-violet-200 hover:text-violet-700 whitespace-nowrap"
         >
           <span>View All</span>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { BannerSlider } from '../components/dashboard/BannerSlider';
 import { StatsGrid } from '../components/dashboard/StatsGrid';
 import { NewOrderCard } from '../components/dashboard/NewOrderCard';
 import { PopularServices } from '../components/dashboard/PopularServices';
@@ -7,7 +8,8 @@ import { SupportBanner } from '../components/dashboard/SupportBanner';
 
 export function DashboardHome() {
   return (
-    <div className="space-y-5 sm:space-y-6">
+    <div className="space-y-4 sm:space-y-5">
+      <BannerSlider />
       <PopularServices />
       <StatsGrid />
       <NewOrderCard />

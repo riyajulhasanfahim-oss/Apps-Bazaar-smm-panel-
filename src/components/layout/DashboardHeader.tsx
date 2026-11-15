@@ -19,12 +19,14 @@ function getNotifPillLabel(category: string): string {
 
 export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
   const {
+    firebaseUser,
     profile,
     notifications,
     handleNotificationClick,
     markAllNotificationsRead,
     setActiveTab,
     setViewMode,
+    openAuthModal,
     userRole,
     staffRole,
     logoutUser,
@@ -69,12 +71,34 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
           </div>
 
           <div className="hidden lg:flex items-center gap-2 text-sm text-slate-500">
-            <span className="font-semibold text-slate-900">Customer Workspace</span>
+            <span className="font-semibold text-slate-900">
+              {firebaseUser ? 'Customer Workspace' : 'Home'}
+            </span>
             <span aria-hidden="true">·</span>
-            <span>{profile?.tierLabel ?? 'Customer Account'}</span>
+            <span>
+              {firebaseUser ? (profile?.tierLabel ?? 'Customer Account') : 'Browse Services'}
+            </span>
           </div>
         </div>
 
+        {!firebaseUser ? (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => openAuthModal('login')}
+              className="inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap"
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              onClick={() => openAuthModal('register')}
+              className="inline-flex h-9 items-center justify-center rounded-xl bg-gradient-to-r from-violet-700 to-purple-600 px-3.5 text-xs font-bold text-white shadow-xs transition-colors hover:from-violet-800 hover:to-purple-700 whitespace-nowrap"
+            >
+              Register
+            </button>
+          </div>
+        ) : (
         <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
           {/* Notification Menu */}
           <div className="relative" ref={notifRef}>
@@ -231,12 +255,12 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
                     type="button"
                     onClick={() => {
                       setProfileOpen(false);
-                      setViewMode('landing');
+                      setActiveTab('home');
                     }}
                     className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-violet-50 hover:text-violet-800"
                   >
                     <Globe className="h-4 w-4" />
-                    Public Home Page
+                    Home Page
                   </button>
                   {(userRole === 'admin' || staffRole !== null) && (
                     <button
@@ -267,6 +291,7 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
             )}
           </div>
         </div>
+        )}
       </div>
     </header>
   );

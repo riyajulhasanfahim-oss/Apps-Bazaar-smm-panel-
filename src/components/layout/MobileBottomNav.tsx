@@ -12,7 +12,7 @@ const BOTTOM_ICONS: Record<'home' | 'order' | 'funds' | 'support' | 'profile', R
 };
 
 export function MobileBottomNav() {
-  const { activeTab, setActiveTab } = useApp();
+  const { activeTab, navigateProtected } = useApp();
   const bottomItems = DASHBOARD_NAV_ITEMS.filter((item) => item.showInBottomNav);
 
   return (
@@ -28,7 +28,7 @@ export function MobileBottomNav() {
             <button
               key={item.id}
               type="button"
-              onClick={() => setActiveTab(item.id as DashboardTab)}
+              onClick={() => navigateProtected(item.id as DashboardTab)}
               aria-current={isActive ? 'page' : undefined}
               className={`relative flex h-full flex-col items-center justify-center gap-0.5 transition-colors ${
                 isActive ? 'text-violet-700' : 'text-slate-500 hover:text-slate-800'

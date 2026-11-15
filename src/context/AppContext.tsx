@@ -70,7 +70,6 @@ import type {
 } from '../types';
 
 export type AppViewMode =
-  | 'landing'
   | 'login'
   | 'register'
   | 'forgot-password'
@@ -79,6 +78,22 @@ export type AppViewMode =
 
 export type AuthModalMode = 'login' | 'register' | null;
 export type UserRole = UserAccountRole;
+
+export interface PendingOrderDraft {
+  categoryId: PlatformId;
+  serviceId: string;
+  link: string;
+  quantity: string;
+}
+
+export interface PendingRedirectTarget {
+  type: 'tab' | 'place-order';
+  tab?: DashboardTab;
+  orderId?: string;
+  ticketId?: string;
+  draftOrderRef?: string;
+  orderDraft?: PendingOrderDraft;
+}
 
 export interface ToastMessage {
   id: string;
@@ -95,7 +110,11 @@ export interface AuthActionResult {
 interface AppContextValue {
   viewMode: AppViewMode;
   setViewMode: (mode: AppViewMode) => void;
+  goToHome: () => void;
   navigateProtected: (tab?: DashboardTab) => void;
+  requireAuthForOrder: (draft: PendingOrderDraft) => void;
+  orderDraft: PendingOrderDraft | null;
+  consumeOrderDraft: () => void;
   activeTab: DashboardTab;
   setActiveTab: (tab: DashboardTab) => void;
   authModalMode: AuthModalMode;
@@ -103,7 +122,7 @@ interface AppContextValue {
   closeAuthModal: () => void;
   selectedPlatform: PlatformId;
   setSelectedPlatform: (id: PlatformId) => void;
-  selectPlatformForOrder: (id: PlatformId) => void;
+  selectPlatformForOrder: (id: PlatformId, serviceId?: string) => void;
   selectedOrderId: string | null;
   setSelectedOrderId: (id: string | null) => void;
   openOrderDetails: (orderId: string) => void;
@@ -203,13 +222,14 @@ function toCustomerProfile(
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [viewMode, setViewModeState] = useState<AppViewMode>('landing');
+  const [viewMode, setViewModeState] = useState<AppViewMode>('dashboard');
   const [activeTab, setActiveTab] = useState<DashboardTab>('home');
   const [authModalMode, setAuthModalMode] = useState<AuthModalMode>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>('instagram');
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [ticketDraftOrderRef, setTicketDraftOrderRef] = useState<string>('');
+  const [orderDraft, setOrderDraft] = useState<PendingOrderDraft | null>(null);
 
   const [platforms, setPlatforms] = useState<PlatformCategory[]>([]);
   const [services, setServices] = useState<SmmService[]>([]);
@@ -259,6 +279,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const orderInFlightRef = useRef<boolean>(false);
   const lastOrderSigRef = useRef<{ sig: string; at: number } | null>(null);
+  const pendingRedirectRef = useRef<PendingRedirectTarget | null>(null);
 
   const adminPermissions = getAdminPermissions(staffRole);
   const openSetupWizard = useCallback(() => setSetupWizardOpen(true), []);
@@ -274,29 +295,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const dismissToast = useCallback(() => setToast(null), []);
 
-  const setViewMode = useCallback(
-    (mode: AppViewMode) => {
-      if (mode === 'dashboard' && authReady && !firebaseUser) {
-        setViewModeState('login');
-        showToast({
-          title: 'Sign in required',
-          description: 'Please sign in to access your customer dashboard.',
-          tone: 'info',
-        });
-        return;
-      }
-      setViewModeState(mode);
-    },
-    [authReady, firebaseUser, showToast]
-  );
+  const consumeOrderDraft = useCallback(() => {
+    setOrderDraft(null);
+  }, []);
+
+  const setViewMode = useCallback((mode: AppViewMode) => {
+    setViewModeState(mode);
+  }, []);
+
+  const goToHome = useCallback(() => {
+    pendingRedirectRef.current = null;
+    setActiveTab('home');
+    setViewModeState('dashboard');
+  }, []);
 
   const navigateProtected = useCallback(
     (tab: DashboardTab = 'home') => {
+      if (tab === 'home' || tab === 'services') {
+        setActiveTab(tab);
+        setViewModeState('dashboard');
+        return;
+      }
       if (!firebaseUser) {
+        pendingRedirectRef.current = { type: 'tab', tab };
         setViewModeState('login');
         showToast({
           title: 'Sign in required',
-          description: 'Log in to access your dashboard, orders, and wallet.',
+          description: 'Please sign in or register to access this feature.',
           tone: 'info',
         });
         return;
@@ -306,6 +331,61 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
     [firebaseUser, showToast]
   );
+
+  const requireAuthForOrder = useCallback(
+    (draft: PendingOrderDraft) => {
+      pendingRedirectRef.current = {
+        type: 'place-order',
+        tab: 'home',
+        orderDraft: draft,
+      };
+      setOrderDraft(draft);
+      setViewModeState('login');
+      showToast({
+        title: 'Sign in to place order',
+        description: 'Log in or create an account to submit your order.',
+        tone: 'info',
+      });
+    },
+    [showToast]
+  );
+
+  const applyPostAuthRedirect = useCallback((effectiveRole: UserRole) => {
+    const pending = pendingRedirectRef.current;
+    pendingRedirectRef.current = null;
+
+    if (!pending) {
+      setActiveTab('home');
+      setViewModeState(effectiveRole === 'admin' ? 'admin' : 'dashboard');
+      return;
+    }
+
+    if (pending.type === 'place-order') {
+      if (pending.orderDraft) {
+        setSelectedPlatform(pending.orderDraft.categoryId);
+        setOrderDraft(pending.orderDraft);
+      }
+      setActiveTab('home');
+      setViewModeState('dashboard');
+      window.setTimeout(() => {
+        const el = document.getElementById('new-order-card');
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 90);
+      return;
+    }
+
+    if (pending.orderId) {
+      setSelectedOrderId(pending.orderId);
+    }
+    if (pending.ticketId) {
+      setSelectedTicketId(pending.ticketId);
+    }
+    if (pending.draftOrderRef) {
+      setTicketDraftOrderRef(pending.draftOrderRef);
+    }
+    setActiveTab(pending.tab ?? 'home');
+    setViewModeState('dashboard');
+  }, []);
 
   const refreshSetupState = useCallback(async (): Promise<SetupState> => {
     const state = await inspectSetupState();
@@ -710,8 +790,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setUserRole(created.role);
         setStaffRole(null);
         setWallet({ balance: created.balance, totalSpent: 0, totalDeposited: 0 });
-        setActiveTab('home');
-        setViewModeState('dashboard');
+        applyPostAuthRedirect(created.role);
         showToast({
           title: 'Account Created',
           description: `Welcome to ${brand}, ${created.name}!`,
@@ -725,7 +804,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         };
       }
     },
-    [showToast, systemSettings?.websiteName]
+    [applyPostAuthRedirect, showToast, systemSettings?.websiteName]
   );
 
   const loginWithEmail = useCallback(
@@ -752,14 +831,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setAccountStatus(signedInProfile.status);
         setUserRole(effectiveRole);
         setStaffRole(resolvedStaffRole);
-        setActiveTab('home');
 
         if (signedInProfile.status !== 'active') {
+          pendingRedirectRef.current = null;
+          setActiveTab('home');
           setViewModeState('dashboard');
           return { success: true };
         }
 
-        setViewModeState(effectiveRole === 'admin' ? 'admin' : 'dashboard');
+        applyPostAuthRedirect(effectiveRole);
         showToast({
           title: 'Signed In',
           description:
@@ -776,7 +856,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         };
       }
     },
-    [showToast]
+    [applyPostAuthRedirect, showToast]
   );
 
   const loginWithGoogle = useCallback(async (): Promise<AuthActionResult> => {
@@ -802,8 +882,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setAccountStatus(signedInProfile.status);
       setUserRole(effectiveRole);
       setStaffRole(resolvedStaffRole);
-      setActiveTab('home');
-      setViewModeState(effectiveRole === 'admin' ? 'admin' : 'dashboard');
+      if (signedInProfile.status !== 'active') {
+        pendingRedirectRef.current = null;
+        setActiveTab('home');
+        setViewModeState('dashboard');
+        return { success: true };
+      }
+
+      applyPostAuthRedirect(effectiveRole);
       showToast({
         title: 'Signed In with Google',
         description: `Welcome, ${signedInProfile.name}.`,
@@ -816,7 +902,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         error: error instanceof Error ? error.message : 'Google sign-in failed.',
       };
     }
-  }, [showToast]);
+  }, [applyPostAuthRedirect, showToast]);
 
   const sendPasswordReset = useCallback(async (email: string): Promise<AuthActionResult> => {
     try {
@@ -859,12 +945,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const logoutUser = useCallback(async () => {
     await authService.logout();
+    pendingRedirectRef.current = null;
+    setOrderDraft(null);
     setFirebaseUser(null);
     setProfile(null);
     setUserRole('user');
     setStaffRole(null);
     setAccountStatus('active');
-    setViewModeState('login');
+    setActiveTab('home');
+    setViewModeState('dashboard');
     showToast({
       title: 'Signed Out',
       description: 'Your session has been closed securely.',
@@ -956,17 +1045,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const selectPlatformForOrder = useCallback(
-    (id: PlatformId) => {
-      if (!firebaseUser) {
-        setViewModeState('login');
-        return;
-      }
+    (id: PlatformId, serviceId?: string) => {
       if (id === 'more') {
         setActiveTab('services');
         setViewModeState('dashboard');
         return;
       }
       setSelectedPlatform(id);
+      if (serviceId) {
+        setOrderDraft({
+          categoryId: id,
+          serviceId,
+          link: '',
+          quantity: '',
+        });
+      }
       setActiveTab('home');
       setViewModeState('dashboard');
       window.setTimeout(() => {
@@ -974,20 +1067,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 60);
     },
-    [firebaseUser]
+    []
   );
 
   const openOrderDetails = useCallback(
     (orderId: string) => {
       if (!firebaseUser) {
+        pendingRedirectRef.current = { type: 'tab', tab: 'order', orderId };
         setViewModeState('login');
+        showToast({
+          title: 'Sign in required',
+          description: 'Please sign in to view your order history.',
+          tone: 'info',
+        });
         return;
       }
       setSelectedOrderId(orderId);
       setActiveTab('order');
       setViewModeState('dashboard');
     },
-    [firebaseUser]
+    [firebaseUser, showToast]
   );
 
   const placeDemoOrder = useCallback(
@@ -1109,10 +1208,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const addDemoFunds = useCallback(
     (_amount: number, _method: string) => {
-      setActiveTab('funds');
-      setViewModeState('dashboard');
+      navigateProtected('funds');
     },
-    []
+    [navigateProtected]
   );
 
   const submitPaymentRequest = useCallback(
@@ -1204,20 +1302,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const openTicketDetails = useCallback(
     (ticketId: string) => {
       if (!firebaseUser) {
+        pendingRedirectRef.current = { type: 'tab', tab: 'support', ticketId };
         setViewModeState('login');
+        showToast({
+          title: 'Sign in required',
+          description: 'Please sign in to view your support tickets.',
+          tone: 'info',
+        });
         return;
       }
       setSelectedTicketId(ticketId);
       setActiveTab('support');
       setViewModeState('dashboard');
     },
-    [firebaseUser]
+    [firebaseUser, showToast]
   );
 
   const openSupportForOrder = useCallback(
     (orderNumber: string) => {
       if (!firebaseUser) {
+        pendingRedirectRef.current = {
+          type: 'tab',
+          tab: 'support',
+          draftOrderRef: orderNumber,
+        };
         setViewModeState('login');
+        showToast({
+          title: 'Sign in required',
+          description: 'Please sign in to open a support ticket.',
+          tone: 'info',
+        });
         return;
       }
       setSelectedTicketId(null);
@@ -1225,7 +1339,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setActiveTab('support');
       setViewModeState('dashboard');
     },
-    [firebaseUser]
+    [firebaseUser, showToast]
   );
 
   const markNotificationRead = useCallback(async (item: NotificationItem) => {
@@ -1282,7 +1396,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       value={{
         viewMode,
         setViewMode,
+        goToHome,
         navigateProtected,
+        requireAuthForOrder,
+        orderDraft,
+        consumeOrderDraft,
         activeTab,
         setActiveTab,
         authModalMode,

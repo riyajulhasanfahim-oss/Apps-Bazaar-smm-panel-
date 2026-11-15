@@ -33,20 +33,20 @@ const TONE_CLASSES: Record<StatCardProps['tone'], { card: string; iconBg: string
 
 export function StatCard({ label, value, icon, tone, onClick }: StatCardProps) {
   const styles = TONE_CLASSES[tone];
-  const baseClass = `${styles.card} flex flex-col items-center justify-center rounded-2xl border p-3 sm:p-4 text-center shadow-xs transition-transform duration-150`;
+  const baseClass = `${styles.card} flex flex-col items-center justify-center rounded-xl border px-2 py-2 sm:px-3 sm:py-2.5 text-center shadow-2xs transition-all duration-200`;
 
   if (onClick) {
     return (
       <button
         type="button"
         onClick={onClick}
-        className={`${baseClass} hover:-translate-y-0.5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-600`}
+        className={`${baseClass} hover:-translate-y-0.5 hover:shadow-sm active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-600`}
       >
-        <div className={`${styles.iconBg} mb-2 flex h-9 w-9 items-center justify-center rounded-full shadow-xs`}>
+        <div className={`${styles.iconBg} mb-1 flex h-7 w-7 items-center justify-center rounded-full shadow-xs`}>
           {icon}
         </div>
-        <span className="text-[11px] sm:text-xs font-medium text-slate-600 leading-tight">{label}</span>
-        <span className={`${styles.value} mt-0.5 font-display text-xl sm:text-2xl font-bold tabular-nums`}>
+        <span className="max-w-full truncate text-[10.5px] sm:text-[11px] font-medium text-slate-600 leading-tight">{label}</span>
+        <span className={`${styles.value} mt-0.5 font-display text-base sm:text-lg font-bold tabular-nums leading-tight`}>
           {value}
         </span>
       </button>
@@ -55,11 +55,11 @@ export function StatCard({ label, value, icon, tone, onClick }: StatCardProps) {
 
   return (
     <div className={baseClass}>
-      <div className={`${styles.iconBg} mb-2 flex h-9 w-9 items-center justify-center rounded-full shadow-xs`}>
+      <div className={`${styles.iconBg} mb-1 flex h-7 w-7 items-center justify-center rounded-full shadow-xs`}>
         {icon}
       </div>
-      <span className="text-[11px] sm:text-xs font-medium text-slate-600 leading-tight">{label}</span>
-      <span className={`${styles.value} mt-0.5 font-display text-xl sm:text-2xl font-bold tabular-nums`}>
+      <span className="max-w-full truncate text-[10.5px] sm:text-[11px] font-medium text-slate-600 leading-tight">{label}</span>
+      <span className={`${styles.value} mt-0.5 font-display text-base sm:text-lg font-bold tabular-nums leading-tight`}>
         {value}
       </span>
     </div>

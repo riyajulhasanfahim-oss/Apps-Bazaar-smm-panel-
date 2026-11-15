@@ -4,7 +4,7 @@ import { useApp } from '../context/AppContext';
 import { BrandLogo } from '../components/common/BrandLogo';
 
 export function ForgotPasswordPage() {
-  const { setViewMode, sendPasswordReset } = useApp();
+  const { setViewMode, goToHome, sendPasswordReset } = useApp();
   const [email, setEmail] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
@@ -36,7 +36,7 @@ export function ForgotPasswordPage() {
     <div className="min-h-screen flex flex-col bg-[#F6F5FB] text-slate-900">
       <header className="border-b border-violet-100/80 bg-white/90 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
-          <BrandLogo showTagline size="sm" onClick={() => setViewMode('landing')} />
+          <BrandLogo showTagline size="sm" onClick={goToHome} />
           <button
             type="button"
             onClick={() => setViewMode('login')}

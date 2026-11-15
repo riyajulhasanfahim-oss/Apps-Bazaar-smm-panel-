@@ -4,7 +4,7 @@ import { APP_CONFIG } from '../../config/app.config';
 import { useApp } from '../../context/AppContext';
 
 export function SupportBanner() {
-  const { setActiveTab, systemSettings } = useApp();
+  const { navigateProtected, systemSettings } = useApp();
   const supportEmail = systemSettings?.supportEmail?.trim() || APP_CONFIG.supportEmail;
   const whatsappRaw = systemSettings?.supportWhatsapp?.trim() || '';
   const whatsappHref = whatsappRaw
@@ -42,7 +42,7 @@ export function SupportBanner() {
           )}
           <button
             type="button"
-            onClick={() => setActiveTab('support')}
+            onClick={() => navigateProtected('support')}
             className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-violet-700 px-4 text-xs font-bold text-white shadow-xs transition-colors hover:bg-violet-800 whitespace-nowrap"
           >
             <span>Open Ticket</span>

@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
+  ArrowDown,
+  ArrowUp,
   Globe,
+  Image as ImageIcon,
   LayoutTemplate,
   Palette,
   Plus,
@@ -69,6 +72,9 @@ export function AdminSettingsView() {
   const [socialYoutube, setSocialYoutube] = useState('');
   const [socialInstagram, setSocialInstagram] = useState('');
   const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [existingDefaultSettings, setExistingDefaultSettings] = useState<Record<string, unknown>>({});
+  const [bannerImages, setBannerImages] = useState<string[]>([]);
+  const [newBannerUrl, setNewBannerUrl] = useState('');
 
   // Landing Page CMS
   const [heroTitle, setHeroTitle] = useState('Grow Your Social Media');
@@ -125,8 +131,53 @@ export function AdminSettingsView() {
         setLandingFaqs(sys.landingFaqs);
       }
       if (typeof sys.maintenanceMode === 'boolean') setMaintenanceMode(sys.maintenanceMode);
+      if (sys.defaultSettings && typeof sys.defaultSettings === 'object') {
+        const rawDefaults = sys.defaultSettings as Record<string, unknown>;
+        setExistingDefaultSettings(rawDefaults);
+        if (Array.isArray(rawDefaults.bannerImages)) {
+          setBannerImages(
+            rawDefaults.bannerImages.filter(
+              (item): item is string => typeof item === 'string' && Boolean(item.trim())
+            )
+          );
+        }
+      }
     });
   }, []);
+
+  const handleAddBannerUrl = () => {
+    const trimmed = newBannerUrl.trim();
+    if (!trimmed) return;
+    if (!/^https?:\/\//i.test(trimmed)) {
+      showToast({
+        title: 'Invalid Banner URL',
+        description: 'Please enter a valid image URL starting with http:// or https://.',
+        tone: 'warning',
+      });
+      return;
+    }
+    if (bannerImages.length >= 10) {
+      showToast({
+        title: 'Limit Reached',
+        description: 'You can add up to 10 banner slider images.',
+        tone: 'warning',
+      });
+      return;
+    }
+    setBannerImages((prev) => [...prev, trimmed.slice(0, 500)]);
+    setNewBannerUrl('');
+  };
+
+  const handleMoveBanner = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= bannerImages.length) return;
+    setBannerImages((prev) => {
+      const next = [...prev];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    });
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,6 +219,30 @@ export function AdminSettingsView() {
           answer: q.answer.trim().slice(0, 500),
         }));
 
+      const pendingTrimmed = newBannerUrl.trim();
+      if (pendingTrimmed && !/^https?:\/\//i.test(pendingTrimmed)) {
+        showToast({
+          title: 'Invalid Banner URL',
+          description: 'Banner image URL must start with http:// or https://.',
+          tone: 'warning',
+        });
+        setSaving(false);
+        return;
+      }
+
+      const combinedBanners = pendingTrimmed
+        ? [...bannerImages, pendingTrimmed]
+        : bannerImages;
+      const sanitizedBannerImages = combinedBanners
+        .map((url) => url.trim().slice(0, 500))
+        .filter((url) => /^https?:\/\//i.test(url))
+        .slice(0, 10);
+
+      if (pendingTrimmed) {
+        setBannerImages(sanitizedBannerImages);
+        setNewBannerUrl('');
+      }
+
       await adminService.updateSystemSettings({
         websiteName: websiteName.trim() || APP_CONFIG.brandName,
         brandTagline: brandTagline.trim() || APP_CONFIG.brandTagline,
@@ -194,6 +269,10 @@ export function AdminSettingsView() {
         landingFeatures: sanitizedFeatures,
         howItWorks: sanitizedSteps,
         landingFaqs: sanitizedFaqs,
+        defaultSettings: {
+          ...existingDefaultSettings,
+          bannerImages: sanitizedBannerImages,
+        },
         maintenanceMode,
         brandingConfigured: true,
       });
@@ -201,7 +280,7 @@ export function AdminSettingsView() {
       await Promise.all([refreshSystemSettings(), refreshSetupState()]);
       showToast({
         title: 'White-Label Settings Saved',
-        description: 'Branding, theme palette, contact details, and Landing CMS updated live.',
+        description: 'Branding, theme palette, banner slider, and settings updated live.',
         tone: 'success',
       });
     } catch (err) {
@@ -442,6 +521,102 @@ export function AdminSettingsView() {
                   <span>Enable Maintenance Mode</span>
                 </label>
               </div>
+            </div>
+
+            {/* User Panel Banner Slider Images */}
+            <div className="rounded-2xl border border-violet-200/80 bg-violet-50/40 p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="h-4 w-4 text-violet-700" />
+                  <p className="text-xs font-bold uppercase tracking-wide text-violet-900">
+                    Home Page Banner Slider Images ({bannerImages.length}/10)
+                  </p>
+                </div>
+                <span className="text-[11px] text-slate-500">
+                  Displayed automatically above Popular Services
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  type="url"
+                  value={newBannerUrl}
+                  onChange={(e) => setNewBannerUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddBannerUrl();
+                    }
+                  }}
+                  placeholder="https://example.com/banner-image.jpg"
+                  className="h-10 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddBannerUrl}
+                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 whitespace-nowrap"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Add Banner URL</span>
+                </button>
+              </div>
+
+              {bannerImages.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  {bannerImages.map((url, idx) => (
+                    <div
+                      key={idx}
+                      className="flex flex-wrap items-center gap-2.5 rounded-xl border border-slate-200 bg-white p-2"
+                    >
+                      <img
+                        src={url}
+                        alt={`Banner preview ${idx + 1}`}
+                        className="h-10 w-20 shrink-0 rounded-lg border border-slate-100 bg-slate-100 object-cover"
+                      />
+                      <input
+                        type="url"
+                        value={url}
+                        onChange={(e) =>
+                          setBannerImages((prev) =>
+                            prev.map((item, i) => (i === idx ? e.target.value : item))
+                          )
+                        }
+                        className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs"
+                      />
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveBanner(idx, -1)}
+                          disabled={idx === 0}
+                          aria-label="Move banner up"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveBanner(idx, 1)}
+                          disabled={idx === bannerImages.length - 1}
+                          aria-label="Move banner down"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setBannerImages((prev) => prev.filter((_, i) => i !== idx))
+                          }
+                          aria-label="Remove banner image"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Contact & Social Links */}
