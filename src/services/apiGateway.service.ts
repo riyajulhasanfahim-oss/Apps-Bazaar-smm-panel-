@@ -35,18 +35,9 @@ import {
 } from '../lib/firestore/collections';
 import { OperationType, handleFirestoreError } from '../lib/firestore/errors';
 
-export interface GatewayLockStatus {
-  locked: boolean;
-  providerLabel: string;
-  installationId?: string;
-  apiCustomerId?: string;
-  canEditProviders: boolean;
-}
-
 export interface GatewayServerStatus {
-  serviceAccountConfigured: boolean;
-  lockStatus: GatewayLockStatus;
-  pepperConfigured: boolean;
+  backendAuthConfigured: boolean;
+  authMode: 'service_account' | 'adc_metadata' | 'none';
 }
 
 export interface ApiCustomerItem {
@@ -183,12 +174,6 @@ export interface GeneratedApiKeyResponse {
   plaintextKeyOnce: string;
 }
 
-export const DEFAULT_LOCK_STATUS: GatewayLockStatus = {
-  locked: false,
-  providerLabel: 'RJ WORLD BD Official API',
-  canEditProviders: true,
-};
-
 export const DEFAULT_GATEWAY_SETTINGS: ApiGatewaySettingsItem = {
   gatewayEnabled: true,
   defaultBaseUrl: '',
@@ -197,7 +182,7 @@ export const DEFAULT_GATEWAY_SETTINGS: ApiGatewaySettingsItem = {
   requireIdempotencyKey: false,
   autoDispatchEnabled: true,
   allowCustomerSelfKeyGen: true,
-  defaultLockMode: true,
+  defaultLockMode: false,
   updatedAtLabel: 'Default',
   updatedBy: 'system',
 };
@@ -402,18 +387,6 @@ function mapInstallation(docData: FirestoreWebsiteInstallationDoc): WebsiteInsta
 }
 
 export const apiGatewayService = {
-  async getPublicLockStatus(): Promise<GatewayLockStatus> {
-    try {
-      const res = await fetch('/api/gateway/lock-status', { method: 'GET' });
-      if (!res.ok) return DEFAULT_LOCK_STATUS;
-      const json = (await res.json()) as { ok?: boolean; data?: GatewayLockStatus };
-      if (!json.ok || !json.data) return DEFAULT_LOCK_STATUS;
-      return json.data;
-    } catch {
-      return DEFAULT_LOCK_STATUS;
-    }
-  },
-
   async getGatewayServerStatus(): Promise<GatewayServerStatus> {
     const { user } = requireFirebaseContext();
     const idToken = await user.getIdToken();
@@ -504,6 +477,12 @@ export const apiGatewayService = {
     const services = getFirebaseServices();
     if (!services || !uid) return null;
     try {
+      const directSnap = await getDoc(
+        doc(services.db, FIRESTORE_COLLECTIONS.apiCustomers, `reseller-${uid}`)
+      );
+      if (directSnap.exists()) {
+        return mapCustomer(directSnap.data() as FirestoreApiCustomerDoc);
+      }
       const snap = await getDocs(
         query(
           collection(services.db, FIRESTORE_COLLECTIONS.apiCustomers),
@@ -516,6 +495,70 @@ export const apiGatewayService = {
     } catch {
       return null;
     }
+  },
+
+  async ensureMyResellerAccess(input: {
+    uid: string;
+    name: string;
+    email: string;
+  }): Promise<{
+    customer: ApiCustomerItem;
+    keys: ApiKeyItem[];
+    initialGeneratedKey: GeneratedApiKeyResponse | null;
+  }> {
+    const { db } = requireFirebaseContext();
+    let customer = await this.getMyApiCustomer(input.uid);
+
+    if (!customer) {
+      const customerId = `reseller-${input.uid}`;
+      const ref = doc(db, FIRESTORE_COLLECTIONS.apiCustomers, customerId);
+      const cleanName = input.name.trim().slice(0, 120) || 'Reseller';
+      const cleanEmail = input.email.trim().toLowerCase().slice(0, 180) || `${input.uid}@panel.local`;
+      const payload: FirestoreApiCustomerDoc = {
+        id: customerId,
+        userId: input.uid,
+        name: cleanName,
+        email: cleanEmail,
+        installationId: `rsw-${input.uid.slice(0, 12)}`,
+        apiBalance: 0,
+        totalSpent: 0,
+        totalOrders: 0,
+        rateLimitPerMinute: 60,
+        customDiscountPercent: 0,
+        status: 'active',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      try {
+        await setDoc(ref, payload);
+        const createdSnap = await getDoc(ref);
+        if (!createdSnap.exists()) {
+          throw new Error('Failed to verify provisioned Reseller API profile.');
+        }
+        customer = mapCustomer(createdSnap.data() as FirestoreApiCustomerDoc);
+      } catch (error) {
+        handleFirestoreError(
+          error,
+          OperationType.CREATE,
+          `${FIRESTORE_COLLECTIONS.apiCustomers}/${customerId}`
+        );
+      }
+    }
+
+    let keys = await this.listMyApiKeys(input.uid).catch(() => []);
+    let initialGeneratedKey: GeneratedApiKeyResponse | null = null;
+
+    if (keys.length === 0 && customer.status === 'active') {
+      initialGeneratedKey = await this.generateApiKey({
+        customerId: customer.id,
+        label: 'Primary Reseller API Key',
+        permissions: ['balance', 'services', 'add', 'status'],
+        rateLimitPerMinute: customer.rateLimitPerMinute || 60,
+      });
+      keys = await this.listMyApiKeys(input.uid).catch(() => []);
+    }
+
+    return { customer, keys, initialGeneratedKey };
   },
 
   async listMyApiKeys(uid: string): Promise<ApiKeyItem[]> {

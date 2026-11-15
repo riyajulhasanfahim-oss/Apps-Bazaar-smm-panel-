@@ -449,6 +449,7 @@ export async function initializeDatabase(options?: {
       const catRef = doc(db, FIRESTORE_COLLECTIONS.categories, plat.id);
       const catSnap = await getDoc(catRef);
       if (!catSnap.exists()) {
+        const isBuiltInNonDemo = plat.id === 'linkedin' || plat.id === 'webtraffic';
         const catDoc: FirestoreCategoryDoc = {
           id: plat.id,
           name: plat.name,
@@ -456,7 +457,7 @@ export async function initializeDatabase(options?: {
           description: plat.description,
           status: 'active',
           sortOrder: i + 1,
-          isDemo: true,
+          ...(isBuiltInNonDemo ? {} : { isDemo: true }),
         };
         try {
           await setDoc(catRef, catDoc);
@@ -679,24 +680,28 @@ export async function repairDatabase(): Promise<{
     verifiedIntactCount += 1;
   }
 
-  // 3. Ensure at least default categories exist if collection is completely empty
-  const catExisting = await getDocs(
-    query(collection(db, FIRESTORE_COLLECTIONS.categories), limit(1))
-  );
-  if (catExisting.empty) {
-    for (let i = 0; i < MOCK_PLATFORMS.length; i += 1) {
-      const plat = MOCK_PLATFORMS[i];
-      await setDoc(doc(db, FIRESTORE_COLLECTIONS.categories, plat.id), {
+  // 3. Ensure built-in categories exist without overwriting existing category docs
+  let repairedCategoriesCount = 0;
+  for (let i = 0; i < MOCK_PLATFORMS.length; i += 1) {
+    const plat = MOCK_PLATFORMS[i];
+    const catRef = doc(db, FIRESTORE_COLLECTIONS.categories, plat.id);
+    const catSnap = await getDoc(catRef);
+    if (!catSnap.exists()) {
+      const isBuiltInNonDemo = plat.id === 'linkedin' || plat.id === 'webtraffic';
+      await setDoc(catRef, {
         id: plat.id,
         name: plat.name,
         icon: plat.id,
         description: plat.description,
         status: 'active',
         sortOrder: i + 1,
-        isDemo: true,
+        ...(isBuiltInNonDemo ? {} : { isDemo: true }),
       } satisfies FirestoreCategoryDoc);
+      repairedCategoriesCount += 1;
     }
-    repairedItems.push(`categories (${MOCK_PLATFORMS.length} defaults)`);
+  }
+  if (repairedCategoriesCount > 0) {
+    repairedItems.push(`categories (${repairedCategoriesCount} restored)`);
   } else {
     verifiedIntactCount += 1;
   }

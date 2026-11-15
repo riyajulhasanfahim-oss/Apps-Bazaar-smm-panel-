@@ -408,7 +408,7 @@ service cloud.firestore {
     }
 
     function isValidApiGatewaySettings(data) {
-      return data.keys().hasAll(['gatewayEnabled', 'defaultBaseUrl', 'defaultRateLimitPerMinute', 'maxBulkStatusIds', 'requireIdempotencyKey', 'autoDispatchEnabled', 'allowCustomerSelfKeyGen', 'defaultLockMode', 'updatedAt'])
+      return data.keys().hasAll(['gatewayEnabled', 'defaultBaseUrl', 'defaultRateLimitPerMinute', 'maxBulkStatusIds', 'requireIdempotencyKey', 'autoDispatchEnabled', 'allowCustomerSelfKeyGen', 'updatedAt'])
         && data.keys().hasOnly(['gatewayEnabled', 'defaultBaseUrl', 'defaultRateLimitPerMinute', 'maxBulkStatusIds', 'requireIdempotencyKey', 'autoDispatchEnabled', 'allowCustomerSelfKeyGen', 'defaultLockMode', 'updatedBy', 'updatedAt'])
         && data.gatewayEnabled is bool
         && data.defaultBaseUrl is string && data.defaultBaseUrl.size() <= 300
@@ -417,7 +417,7 @@ service cloud.firestore {
         && data.requireIdempotencyKey is bool
         && data.autoDispatchEnabled is bool
         && data.allowCustomerSelfKeyGen is bool
-        && data.defaultLockMode is bool
+        && (!('defaultLockMode' in data) || data.defaultLockMode is bool)
         && (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 128))
         && data.updatedAt is timestamp;
     }
@@ -1032,15 +1032,30 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // 14. apiCustomers (Owner reads own API profile; Admin manages balances/status/rate limits)
+    // 14. apiCustomers (Owner reads & self-provisions own zero-balance reseller profile; Admin manages balances/status/rate limits)
     match /apiCustomers/{customerId} {
       allow get: if isValidId(customerId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
       allow create: if isValidId(customerId)
-        && isAdmin()
+        && isSignedIn()
         && isValidApiCustomer(incoming(), customerId)
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isActiveUser(request.auth.uid)
+            && customerId == ('reseller-' + request.auth.uid)
+            && 'userId' in incoming()
+            && incoming().userId == request.auth.uid
+            && incoming().apiBalance == 0
+            && (!('totalSpent' in incoming()) || incoming().totalSpent == 0)
+            && (!('totalOrders' in incoming()) || incoming().totalOrders == 0)
+            && (!('customDiscountPercent' in incoming()) || incoming().customDiscountPercent == 0)
+            && incoming().status == 'active'
+            && incoming().rateLimitPerMinute <= 120
+          )
+        );
       allow update: if isValidId(customerId)
         && isAdmin()
         && isValidApiCustomer(incoming(), customerId)

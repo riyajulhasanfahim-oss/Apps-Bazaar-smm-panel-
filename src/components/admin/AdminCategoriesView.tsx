@@ -4,7 +4,7 @@ import { useApp } from '../../context/AppContext';
 import { adminPanelService, type AdminCategoryItem } from '../../services/adminPanel.service';
 
 export function AdminCategoriesView() {
-  const { showToast } = useApp();
+  const { showToast, refreshCustomerData } = useApp();
   const [categories, setCategories] = useState<AdminCategoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<AdminCategoryItem | null>(null);
@@ -70,7 +70,7 @@ export function AdminCategoriesView() {
         tone: 'success',
       });
       setModalOpen(false);
-      await loadCategories();
+      await Promise.all([loadCategories(), refreshCustomerData().catch(() => undefined)]);
     } catch (err) {
       showToast({
         title: 'Save Failed',
@@ -101,6 +101,7 @@ export function AdminCategoriesView() {
         description: `${cat.name} is now ${nextStatus}.`,
         tone: 'success',
       });
+      refreshCustomerData().catch(() => undefined);
     } catch (err) {
       showToast({
         title: 'Update Failed',
@@ -121,6 +122,7 @@ export function AdminCategoriesView() {
         tone: 'info',
       });
       setConfirmDelete(null);
+      refreshCustomerData().catch(() => undefined);
     } catch (err) {
       showToast({
         title: 'Delete Failed',

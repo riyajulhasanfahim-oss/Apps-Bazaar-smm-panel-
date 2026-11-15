@@ -102,26 +102,32 @@ export function ApiDashboardPage() {
     setErrorMsg(null);
     try {
       const uid = firebaseUser.uid;
-      const [cus, keyList, orderList, txnList, logList, gwSettings] = await Promise.all([
-        apiGatewayService.getMyApiCustomer(uid),
-        apiGatewayService.listMyApiKeys(uid).catch(() => []),
+      const ensured = await apiGatewayService.ensureMyResellerAccess({
+        uid,
+        name: profile?.fullName || firebaseUser.displayName || 'Reseller',
+        email: profile?.email || firebaseUser.email || `${uid}@panel.local`,
+      });
+      const [orderList, txnList, logList, gwSettings] = await Promise.all([
         apiGatewayService.listMyApiOrders(uid).catch(() => []),
         apiGatewayService.listMyApiTransactions(uid).catch(() => []),
         apiGatewayService.listMyApiRequestLogs(uid).catch(() => []),
         apiGatewayService.getApiGatewaySettings(),
       ]);
-      setCustomer(cus);
-      setKeys(keyList);
+      setCustomer(ensured.customer);
+      setKeys(ensured.keys);
+      if (ensured.initialGeneratedKey) {
+        setRevealedKeyModal(ensured.initialGeneratedKey);
+      }
       setOrders(orderList);
       setTransactions(txnList);
       setLogs(logList);
       setGatewaySettings(gwSettings);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unable to load API workspace.');
+      setErrorMsg(err instanceof Error ? err.message : 'Unable to load Reseller API workspace.');
     } finally {
       setLoading(false);
     }
-  }, [firebaseUser?.uid]);
+  }, [firebaseUser?.displayName, firebaseUser?.email, firebaseUser?.uid, profile?.email, profile?.fullName]);
 
   useEffect(() => {
     loadWorkspace();
@@ -447,54 +453,37 @@ echo $response;
         </div>
       ) : (
         <>
-          {/* Not Enrolled Banner (when user hasn't been assigned an API Customer account yet) */}
+          {/* Retry fallback only if transient provisioning error occurred */}
           {!customer && subTab !== 'docs' && (
-            <div className="rounded-3xl border border-violet-200 bg-white p-6 space-y-4">
+            <div className="rounded-3xl border border-amber-200 bg-white p-6 space-y-4">
               <div className="flex items-start gap-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
                   <Terminal className="h-5 w-5" />
                 </div>
                 <div className="space-y-1">
                   <h2 className="font-display text-base font-bold text-slate-950">
-                    API Customer Access Not Provisioned Yet
+                    Reseller API Workspace Unavailable
                   </h2>
                   <p className="text-xs leading-relaxed text-slate-600">
-                    Your panel account does not have an active API Gateway customer binding yet. Share
-                    your User ID below with Master Administration to activate reseller API access, rate
-                    limits, and API balance. You can still review the full API Documentation right now.
+                    We could not finish initializing your Reseller API profile right now. Click
+                    Retry below or review the API Documentation while your session is active.
                   </p>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3.5 text-xs">
-                <div>
-                  <span className="text-slate-500">Account Email: </span>
-                  <span className="font-semibold text-slate-900">
-                    {profile?.email || firebaseUser?.email}
-                  </span>
-                </div>
-                <span className="text-slate-300">·</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-500">User UID: </span>
-                  <code className="font-mono font-semibold text-slate-900">
-                    {firebaseUser?.uid}
-                  </code>
-                  <button
-                    type="button"
-                    onClick={() => copyText(firebaseUser?.uid || '', 'copy-uid', 'UID Copied')}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700"
-                  >
-                    <Copy className="h-3 w-3" />
-                    <span>Copy</span>
-                  </button>
-                </div>
-              </div>
-
-              <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={loadWorkspace}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>Retry Initialization</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setSubTab('docs')}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 text-xs font-bold text-slate-700 hover:bg-slate-50"
                 >
                   <Code2 className="h-3.5 w-3.5" />
                   <span>Read API Documentation</span>

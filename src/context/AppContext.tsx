@@ -8,11 +8,6 @@ import { walletService } from '../services/wallet.service';
 import { supportService } from '../services/support.service';
 import { adminService } from '../services/admin.service';
 import {
-  apiGatewayService,
-  DEFAULT_LOCK_STATUS,
-  type GatewayLockStatus,
-} from '../services/apiGateway.service';
-import {
   formatFirestoreTimestamp,
   getLocalReadBroadcastIds,
   mapCustomerOrderDoc,
@@ -172,8 +167,6 @@ interface AppContextValue {
   sendPasswordReset: (email: string) => Promise<AuthActionResult>;
   updateUserProfile: (input: UpdateProfileInput) => Promise<AuthActionResult>;
   logoutUser: () => Promise<void>;
-  gatewayLock: GatewayLockStatus;
-  refreshGatewayLock: () => Promise<GatewayLockStatus>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -263,7 +256,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     lastError: null,
   });
   const [lastInitReport, setLastInitReport] = useState<DatabaseInitReport | null>(null);
-  const [gatewayLock, setGatewayLock] = useState<GatewayLockStatus>(DEFAULT_LOCK_STATUS);
 
   const orderInFlightRef = useRef<boolean>(false);
   const lastOrderSigRef = useRef<{ sig: string; at: number } | null>(null);
@@ -324,12 +316,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const refreshSystemSettings = useCallback(async () => {
     const sys = await adminService.getSystemSettings();
     setSystemSettings(sys);
-  }, []);
-
-  const refreshGatewayLock = useCallback(async (): Promise<GatewayLockStatus> => {
-    const status = await apiGatewayService.getPublicLockStatus();
-    setGatewayLock(status);
-    return status;
   }, []);
 
   // Synchronize white-label document title, favicon & CSS accent theme variables
@@ -504,7 +490,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
     refreshSetupState();
-    refreshGatewayLock();
 
     const unsubscribe = subscribeFirebaseAuth(async (user) => {
       if (!active) return;
@@ -521,7 +506,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       active = false;
       unsubscribe();
     };
-  }, [hydrateUserWorkspace, refreshGatewayLock, refreshSetupState]);
+  }, [hydrateUserWorkspace, refreshSetupState]);
 
   // Real-time balance, orders, notifications, tickets & payment status listeners
   useEffect(() => {
@@ -1364,8 +1349,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         sendPasswordReset,
         updateUserProfile,
         logoutUser,
-        gatewayLock,
-        refreshGatewayLock,
       }}
     >
       {children}

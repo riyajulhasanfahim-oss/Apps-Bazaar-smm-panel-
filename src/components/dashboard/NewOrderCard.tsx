@@ -62,8 +62,27 @@ export function NewOrderCard() {
       if (currentNum < next.minQuantity || currentNum > next.maxQuantity) {
         setQuantityInput(String(Math.min(next.maxQuantity, Math.max(next.minQuantity, 1000))));
       }
+    } else if (categoryServices.length === 0 && selectedServiceId !== '') {
+      setSelectedServiceId('');
     }
   }, [categoryServices, quantityInput, selectedServiceId]);
+
+  const selectedCategoryName = useMemo(() => {
+    const found = platforms.find((p) => p.id === selectedPlatform);
+    if (found) return found.name;
+    const norm = String(selectedPlatform || '').toLowerCase();
+    if (norm.includes('traffic')) return 'Web Traffic';
+    if (norm.includes('linkedin')) return 'LinkedIn';
+    return selectedPlatform;
+  }, [platforms, selectedPlatform]);
+
+  const linkPlaceholder = useMemo(() => {
+    const norm = String(selectedPlatform || '').toLowerCase();
+    if (norm === 'x') return 'https://x.com/username';
+    if (norm.includes('traffic')) return 'https://example.com/landing-page';
+    if (norm.includes('linkedin')) return 'https://www.linkedin.com/in/username';
+    return `https://${selectedPlatform}.com/username`;
+  }, [selectedPlatform]);
 
   const activeService = useMemo(
     () => categoryServices.find((s) => s.id === selectedServiceId) ?? categoryServices[0],
@@ -177,6 +196,15 @@ export function NewOrderCard() {
                       {platform.name}
                     </option>
                   ))}
+                  {!platforms.some((p) => p.id === selectedPlatform) && (
+                    <option value={selectedPlatform}>
+                      {selectedPlatform === 'webtraffic' || selectedPlatform === 'web-traffic'
+                        ? 'Web Traffic'
+                        : selectedPlatform === 'linkedin'
+                          ? 'LinkedIn'
+                          : selectedPlatform}
+                    </option>
+                  )}
                 </select>
                 <ChevronDown
                   className="pointer-events-none absolute right-3 h-4 w-4 text-slate-400"
@@ -220,24 +248,35 @@ export function NewOrderCard() {
             </div>
           </div>
 
-          {/* Link Input */}
-          <div>
-            <label htmlFor="order-link" className="block text-xs font-semibold text-slate-700 mb-1.5">
-              Link
-            </label>
-            <div className="relative flex items-center">
-              <Link2 className="pointer-events-none absolute left-3.5 h-4 w-4 text-violet-600" aria-hidden="true" />
-              <input
-                id="order-link"
-                type="url"
-                required
-                value={link}
-                onChange={(e) => setLink(e.target.value)}
-                placeholder={`https://${selectedPlatform === 'x' ? 'x.com' : `${selectedPlatform}.com`}/username`}
-                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50/70 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 transition-colors focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
-              />
+          {categoryServices.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200/80 bg-slate-50/70 p-6 text-center">
+              <p className="text-sm font-bold text-slate-800">
+                No active services available for {selectedCategoryName}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Services added and activated by the administrator under {selectedCategoryName} will appear here automatically.
+              </p>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Link Input */}
+              <div>
+                <label htmlFor="order-link" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  Link
+                </label>
+                <div className="relative flex items-center">
+                  <Link2 className="pointer-events-none absolute left-3.5 h-4 w-4 text-violet-600" aria-hidden="true" />
+                  <input
+                    id="order-link"
+                    type="url"
+                    required
+                    value={link}
+                    onChange={(e) => setLink(e.target.value)}
+                    placeholder={linkPlaceholder}
+                    className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50/70 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 transition-colors focus:border-violet-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                  />
+                </div>
+              </div>
 
           {/* Quantity + Presets */}
           <div>
@@ -414,6 +453,8 @@ export function NewOrderCard() {
               <Rocket className="h-4 w-4" aria-hidden="true" />
             </button>
           </div>
+            </>
+          )}
         </form>
       )}
     </section>

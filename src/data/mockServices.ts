@@ -59,6 +59,24 @@ export const MOCK_PLATFORMS: PlatformCategory[] = [
     bgTint: 'bg-slate-100',
     serviceCount: 19,
   },
+  {
+    id: 'linkedin',
+    name: 'LinkedIn',
+    shortName: 'LinkedIn',
+    description: 'Profile followers, connections, company page growth, and post engagement.',
+    accentColor: '#0A66C2',
+    bgTint: 'bg-sky-50',
+    serviceCount: 0,
+  },
+  {
+    id: 'webtraffic',
+    name: 'Web Traffic',
+    shortName: 'Web Traffic',
+    description: 'Targeted website visitors, organic search traffic, and geo-targeted hits.',
+    accentColor: '#0D9488',
+    bgTint: 'bg-teal-50',
+    serviceCount: 0,
+  },
 ];
 
 export const MOCK_SERVICES: SmmService[] = [

@@ -7,7 +7,6 @@ import {
   Eye,
   EyeOff,
   Loader2,
-  Lock,
   Plus,
   RefreshCw,
   Search,
@@ -41,7 +40,7 @@ interface ConnectionFeedback {
 }
 
 export function AdminProvidersView() {
-  const { showToast, systemSettings, gatewayLock } = useApp();
+  const { showToast, systemSettings, refreshCustomerData } = useApp();
   const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
   const currencyCode = systemSettings?.currency?.trim() || APP_CONFIG.currencyCode;
   const [providers, setProviders] = useState<AdminApiProviderItem[]>([]);
@@ -373,9 +372,19 @@ export function AdminProvidersView() {
   const openReviewForImported = (item: ProviderServiceDTO) => {
     const defaultCat = categories[0]?.id ?? 'instagram';
     const suggested = suggestPlatformAndTypeFromImported(item.name, item.category, defaultCat);
-    const matchingCategory = categories.some((c) => c.id === suggested.categoryId)
-      ? suggested.categoryId
-      : defaultCat;
+    const matchingCategory =
+      categories.find((c) => {
+        if (c.id === suggested.categoryId) return true;
+        if (suggested.categoryId === 'linkedin') {
+          return c.id.toLowerCase().includes('linkedin') || c.name.toLowerCase().includes('linkedin');
+        }
+        if (suggested.categoryId === 'webtraffic') {
+          const cid = c.id.toLowerCase();
+          const cname = c.name.toLowerCase();
+          return cid.includes('traffic') || cname.includes('traffic');
+        }
+        return false;
+      })?.id ?? defaultCat;
 
     const cost = Number(item.rate || 0);
     const suggestedSell = Number((cost * 1.35).toFixed(2));
@@ -424,7 +433,7 @@ export function AdminProvidersView() {
         tone: 'success',
       });
       setReviewItem(null);
-      await loadData();
+      await Promise.all([loadData(), refreshCustomerData().catch(() => undefined)]);
     } catch (err) {
       showToast({
         title: 'Import Save Failed',
@@ -457,62 +466,6 @@ export function AdminProvidersView() {
   };
 
   const reviewGrossMargin = Number(rvSellingPrice || 0) - Number(rvCostPrice || 0);
-
-  if (gatewayLock.locked) {
-    return (
-      <div className="space-y-5">
-        <div>
-          <h1 className="font-display text-xl sm:text-2xl font-extrabold text-slate-950">
-            Official API Provider Connection
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500">
-            This installation is permanently bound to the official gateway provider at the server level.
-          </p>
-        </div>
-
-        <div className="rounded-3xl border border-violet-200 bg-white p-6 shadow-xs space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-700">
-                <Lock className="h-5 w-5" />
-              </div>
-              <div>
-                <p className="text-[11px] font-bold uppercase tracking-wider text-violet-700">
-                  Server-Enforced Lock Active
-                </p>
-                <h2 className="font-display text-lg font-extrabold text-slate-950">
-                  {gatewayLock.providerLabel}
-                </h2>
-              </div>
-            </div>
-            <span className="text-xs font-bold uppercase text-emerald-700">Connected</span>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 rounded-2xl border border-slate-100 bg-slate-50 p-4 text-xs">
-            <div>
-              <p className="text-slate-500">Installation ID</p>
-              <p className="mt-0.5 font-mono font-bold text-slate-900">
-                {gatewayLock.installationId || systemSettings?.installationId || 'Server Bound'}
-              </p>
-            </div>
-            <div>
-              <p className="text-slate-500">API Customer Binding</p>
-              <p className="mt-0.5 font-mono font-bold text-slate-900">
-                {gatewayLock.apiCustomerId || 'Protected Gateway Account'}
-              </p>
-            </div>
-          </div>
-
-          <p className="text-xs leading-relaxed text-slate-600">
-            Custom upstream provider URLs, third-party API keys, and manual provider additions are
-            disabled on this deployment. All order dispatches and status synchronizations route
-            securely through <strong className="text-slate-900">{gatewayLock.providerLabel}</strong>{' '}
-            using server-side credentials.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-5">

@@ -24,11 +24,36 @@ import { toUserFriendlyAuthError } from '../lib/firebase/authErrors';
 import {
   FIRESTORE_COLLECTIONS,
   type FirestoreAdminNotificationDoc,
+  type FirestoreApiCustomerDoc,
   type FirestoreUserDoc,
   type UserAccountRole,
   type UserAccountStatus,
 } from '../lib/firestore/collections';
 import { OperationType, handleFirestoreError } from '../lib/firestore/errors';
+
+function ensureResellerProfileBestEffort(uid: string, name: string, email: string): void {
+  const services = getFirebaseServices();
+  if (!services || !uid) return;
+  const customerId = `reseller-${uid}`;
+  const payload: FirestoreApiCustomerDoc = {
+    id: customerId,
+    userId: uid,
+    name: (name || 'Reseller').trim().slice(0, 120),
+    email: (email || `${uid}@panel.local`).trim().toLowerCase().slice(0, 180),
+    installationId: `rsw-${uid.slice(0, 12)}`,
+    apiBalance: 0,
+    totalSpent: 0,
+    totalOrders: 0,
+    rateLimitPerMinute: 60,
+    customDiscountPercent: 0,
+    status: 'active',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+  void setDoc(doc(services.db, FIRESTORE_COLLECTIONS.apiCustomers, customerId), payload).catch(
+    () => undefined
+  );
+}
 
 function emitNewUserAdminAlert(uid: string, name: string, email: string): void {
   const services = getFirebaseServices();
@@ -148,6 +173,7 @@ export const authService = {
     try {
       await setDoc(userRef, newProfileDoc);
       emitNewUserAdminAlert(authUser.uid, newProfileDoc.name, newProfileDoc.email);
+      ensureResellerProfileBestEffort(authUser.uid, newProfileDoc.name, newProfileDoc.email);
       const saved = await getDoc(userRef);
       if (saved.exists()) {
         return mapFirestoreUser(saved.data() as FirestoreUserDoc);
@@ -302,6 +328,7 @@ export const authService = {
     try {
       await setDoc(userRef, createdDoc);
       emitNewUserAdminAlert(authUser.uid, createdDoc.name, createdDoc.email);
+      ensureResellerProfileBestEffort(authUser.uid, createdDoc.name, createdDoc.email);
       const refreshed = await getDoc(userRef);
       if (refreshed.exists()) {
         return mapFirestoreUser(refreshed.data() as FirestoreUserDoc);

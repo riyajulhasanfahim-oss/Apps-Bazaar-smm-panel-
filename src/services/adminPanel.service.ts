@@ -626,7 +626,7 @@ export const adminPanelService = {
         orderBy('sortOrder', 'asc')
       );
       const snap = await getDocs(q);
-      return snap.docs.map((d) => {
+      const items: AdminCategoryItem[] = snap.docs.map((d) => {
         const data = d.data() as FirestoreCategoryDoc;
         return {
           id: data.id,
@@ -637,6 +637,69 @@ export const adminPanelService = {
           sortOrder: Number(data.sortOrder ?? 0),
         };
       });
+
+      let deletedBuiltIns = new Set<string>();
+      try {
+        const raw = localStorage.getItem('rj_deleted_builtin_categories');
+        const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+        if (Array.isArray(parsed)) {
+          deletedBuiltIns = new Set(parsed.filter((x) => typeof x === 'string'));
+        }
+      } catch {
+        // ignore storage access issues
+      }
+
+      const hasLinkedIn = items.some(
+        (c) => c.id.toLowerCase().includes('linkedin') || c.name.toLowerCase().includes('linkedin')
+      );
+      const hasWebTraffic = items.some((c) => {
+        const cid = c.id.toLowerCase();
+        const cname = c.name.toLowerCase();
+        return cid.includes('traffic') || cname.includes('traffic');
+      });
+
+      const missingDefaults: FirestoreCategoryDoc[] = [];
+      if (!hasLinkedIn && !deletedBuiltIns.has('linkedin')) {
+        missingDefaults.push({
+          id: 'linkedin',
+          name: 'LinkedIn',
+          icon: 'linkedin',
+          description: 'Profile followers, connections, company page growth, and post engagement.',
+          status: 'active',
+          sortOrder: Math.max(7, items.length + 1),
+        });
+      }
+      if (!hasWebTraffic && !deletedBuiltIns.has('webtraffic')) {
+        missingDefaults.push({
+          id: 'webtraffic',
+          name: 'Web Traffic',
+          icon: 'webtraffic',
+          description: 'Targeted website visitors, organic search traffic, and geo-targeted hits.',
+          status: 'active',
+          sortOrder: Math.max(8, items.length + missingDefaults.length + 1),
+        });
+      }
+
+      if (missingDefaults.length > 0 && services.auth.currentUser) {
+        for (const def of missingDefaults) {
+          try {
+            await setDoc(doc(services.db, FIRESTORE_COLLECTIONS.categories, def.id), def);
+            items.push({
+              id: def.id,
+              name: def.name,
+              icon: def.icon,
+              description: def.description ?? '',
+              status: def.status,
+              sortOrder: def.sortOrder,
+            });
+          } catch {
+            // Non-manager roles (e.g. support_staff) cannot write categories; skip silently
+          }
+        }
+        items.sort((a, b) => a.sortOrder - b.sortOrder);
+      }
+
+      return items;
     } catch (error) {
       handleFirestoreError(
         error,
@@ -686,6 +749,17 @@ export const adminPanelService = {
     if (!services) throw new Error('Firebase is not connected.');
     try {
       await deleteDoc(doc(services.db, FIRESTORE_COLLECTIONS.categories, catId));
+      if (catId === 'linkedin' || catId === 'webtraffic') {
+        try {
+          const raw = localStorage.getItem('rj_deleted_builtin_categories');
+          const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+          const next = new Set(Array.isArray(parsed) ? parsed.filter((x) => typeof x === 'string') : []);
+          next.add(catId);
+          localStorage.setItem('rj_deleted_builtin_categories', JSON.stringify(Array.from(next)));
+        } catch {
+          // ignore storage errors
+        }
+      }
     } catch (error) {
       handleFirestoreError(
         error,

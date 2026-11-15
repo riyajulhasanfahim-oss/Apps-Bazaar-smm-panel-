@@ -174,12 +174,10 @@ Never run a buyer panel in Firestore "Test Mode" (`allow read, write: if true;`)
 
 ---
 
-## Step 13 — RJ WORLD BD Own API Gateway & Locked API Integration
+## Step 13 — RJ WORLD BD Reseller API Gateway Architecture
 
-- **Public Gateway Endpoint (`POST /api/v2`)**: Standard SMM Panel API v2 compatible endpoint supporting `balance`, `services`, `add` (with atomic Firestore wallet deduction, idempotency protection, upstream dispatch, and automatic refund on upstream failure), and single/multiple `status` queries.
-- **Hashed API Key Security**: Plaintext API keys (`rjw_live_...`) are shown **once** on generation/regeneration via `POST /api/gateway/keys/generate` and `POST /api/gateway/keys/regenerate`. Only SHA-256 / HMAC-SHA256 `keyHash` values are persisted in Firestore (`apiKeys`).
-- **Gateway Server Credential Requirement**: External panel calls to `POST /api/v2` authenticate via the buyer's `key` (without a Firebase user JWT), so the Master Gateway server requires `FIREBASE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS` configured on the host.
-- **Buyer Website API Lock Mode**: Configure `RJW_GATEWAY_LOCKED="true"`, `RJW_GATEWAY_BASE_URL`, `RJW_LOCKED_API_KEY`, `RJW_INSTALLATION_ID`, and `RJW_API_CUSTOMER_ID` on sold buyer deployments. When active:
-  - Backend routes (`/api/orders/dispatch`, `/api/orders/sync-status`, `/api/provider/execute`) block custom external URLs/API keys with HTTP `403` and route exclusively through RJ WORLD BD Official API.
-  - **Admin Panel → API Providers**, **Services**, and **Setup Wizard** display the locked Official API state and disable custom provider configuration.
+- **Master Admin Upstream Providers**: Only Master Admin (`Admin Panel → API Providers`, `Services`, `Setup Wizard`) configures upstream SMM Provider URLs and API Keys, tests connections, checks balances, and imports/maps services. Upstream keys stay isolated in Admin-only Firestore rules (`apiProviders`) and server proxy routes (`server.ts`).
+- **Auto-Provisioned Reseller API Access**: Every active registered customer automatically receives their own Reseller API profile (`apiCustomers/reseller-{uid}`) and a unique SHA-256 hashed API Key (`rjw_live_...`, plaintext shown once upon initial creation or regeneration via `POST /api/gateway/keys/generate` and `POST /api/gateway/keys/regenerate`).
+- **Reseller API Forwarding Endpoint (`POST /api/v2`)**: Standard SMM Panel API v2 compatible endpoint supporting `balance`, `services`, `add` (atomic API balance deduction, idempotency protection, automatic upstream provider forwarding, and automatic refund on upstream failure), and `status` (single or comma-separated bulk queries with live upstream status sync and zero upstream provider leakage).
+- **Zero Lock-Mode Env Vars**: No per-installation `.env` API locks or hashing pepper variables are required. Backend `POST /api/v2` resolves Google Cloud Application Default Credentials (Metadata Server) automatically on managed cloud hosts or uses optional `FIREBASE_SERVICE_ACCOUNT_JSON` / `GOOGLE_APPLICATION_CREDENTIALS`.
 

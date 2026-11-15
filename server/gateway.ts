@@ -27,15 +27,6 @@ export interface GatewayDeps {
   ) => 'Pending' | 'Processing' | 'In Progress' | 'Completed' | 'Partial' | 'Cancelled' | 'Failed';
 }
 
-export interface WebsiteLockConfig {
-  locked: boolean;
-  providerLabel: string;
-  baseUrl: string;
-  lockedApiKey: string;
-  installationId: string;
-  apiCustomerId: string;
-}
-
 interface ServiceAccountCreds {
   client_email: string;
   private_key: string;
@@ -54,29 +45,6 @@ interface RateBucket {
 
 let cachedServiceToken: TokenCache | null = null;
 const rateLimitBuckets = new Map<string, RateBucket>();
-
-export function getWebsiteLockConfig(): WebsiteLockConfig {
-  const locked = String(process.env.RJW_GATEWAY_LOCKED || '').toLowerCase() === 'true';
-  return {
-    locked,
-    providerLabel: 'RJ WORLD BD Official API',
-    baseUrl: (process.env.RJW_GATEWAY_BASE_URL || '').trim(),
-    lockedApiKey: (process.env.RJW_LOCKED_API_KEY || '').trim(),
-    installationId: (process.env.RJW_INSTALLATION_ID || '').trim(),
-    apiCustomerId: (process.env.RJW_API_CUSTOMER_ID || '').trim(),
-  };
-}
-
-export function getPublicLockStatus() {
-  const lock = getWebsiteLockConfig();
-  return {
-    locked: lock.locked,
-    providerLabel: lock.providerLabel,
-    installationId: lock.installationId || undefined,
-    apiCustomerId: lock.apiCustomerId || undefined,
-    canEditProviders: !lock.locked,
-  };
-}
 
 function loadServiceAccountCreds(): ServiceAccountCreds | null {
   try {
@@ -117,14 +85,70 @@ export function hasServiceAccountConfigured(): boolean {
   return loadServiceAccountCreds() !== null;
 }
 
-async function getServiceAccountAccessToken(): Promise<string> {
+async function fetchMetadataServerAccessToken(): Promise<TokenCache | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1200);
+  try {
+    const res = await fetch(
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+      {
+        method: 'GET',
+        headers: { 'Metadata-Flavor': 'Google' },
+        signal: controller.signal,
+      }
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as { access_token?: string; expires_in?: number };
+    if (!json.access_token) return null;
+    return {
+      accessToken: json.access_token,
+      expiresAtMs: Date.now() + Math.max(300, Number(json.expires_in || 3600)) * 1000,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getGatewayBackendAuthStatus(target: FirebaseTarget): Promise<{
+  backendAuthConfigured: boolean;
+  authMode: 'service_account' | 'adc_metadata' | 'none';
+}> {
+  if (hasServiceAccountConfigured()) {
+    return { backendAuthConfigured: true, authMode: 'service_account' };
+  }
+  const metaToken = await fetchMetadataServerAccessToken();
+  if (metaToken) {
+    try {
+      await getDocRawWithToken(target, metaToken.accessToken, 'settings/apiGateway');
+      cachedServiceToken = metaToken;
+      return { backendAuthConfigured: true, authMode: 'adc_metadata' };
+    } catch {
+      // Metadata server token lacks Datastore IAM permission on target Firebase project
+    }
+  }
+  return { backendAuthConfigured: false, authMode: 'none' };
+}
+
+async function getServiceAccountAccessToken(target: FirebaseTarget): Promise<string> {
   if (cachedServiceToken && cachedServiceToken.expiresAtMs > Date.now() + 60_000) {
     return cachedServiceToken.accessToken;
   }
 
   const creds = loadServiceAccountCreds();
   if (!creds) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON is not configured on the gateway server.');
+    const metaToken = await fetchMetadataServerAccessToken();
+    if (metaToken) {
+      try {
+        await getDocRawWithToken(target, metaToken.accessToken, 'settings/apiGateway');
+        cachedServiceToken = metaToken;
+        return metaToken.accessToken;
+      } catch {
+        // Metadata server token does not authorize target Firebase project Firestore
+      }
+    }
+    throw new Error('Gateway backend Firebase credentials are not configured on the host.');
   }
 
   const nowSec = Math.floor(Date.now() / 1000);
@@ -188,12 +212,7 @@ export function generateRawApiKey(): {
 }
 
 export function hashApiKey(rawKey: string): string {
-  const clean = rawKey.trim();
-  const pepper = (process.env.GATEWAY_KEY_PEPPER || '').trim();
-  if (pepper) {
-    return crypto.createHmac('sha256', pepper).update(clean).digest('hex');
-  }
-  return crypto.createHash('sha256').update(clean).digest('hex');
+  return crypto.createHash('sha256').update(rawKey.trim()).digest('hex');
 }
 
 function checkRateLimit(bucketKey: string, limitPerMinute: number): {
@@ -480,16 +499,105 @@ async function writeGatewayRequestLog(
 }
 
 export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
-  /**
-   * Public non-secret lock status endpoint used by Buyer Websites & Admin UI
-   * to enforce RJ WORLD BD Official API lock mode cleanly.
-   */
-  app.get('/api/gateway/lock-status', (_req: Request, res: Response) => {
-    res.json({
-      ok: true,
-      data: getPublicLockStatus(),
-    });
-  });
+  const syncResellerOrderFromUpstream = async (
+    fbTarget: FirebaseTarget,
+    accessToken: string,
+    apiOrderId: string,
+    apiOrderData: Record<string, unknown>,
+    internalOrderId: string,
+    internalOrderData: Record<string, unknown>
+  ): Promise<Record<string, unknown>> => {
+    const currentStatus = String(internalOrderData.status || apiOrderData.status || 'Pending');
+    const isNonTerminal = ['Pending', 'Processing', 'In Progress'].includes(currentStatus);
+    const providerId = String(internalOrderData.providerId || '').trim();
+    const providerOrderId = String(internalOrderData.providerOrderId || '').trim();
+
+    if (!isNonTerminal || !providerId || !providerOrderId) {
+      return internalOrderData;
+    }
+
+    try {
+      const provSnap = await getDocRawWithToken(
+        fbTarget,
+        accessToken,
+        `apiProviders/${providerId}`
+      );
+      if (!provSnap.exists || provSnap.data.status !== 'active') {
+        return internalOrderData;
+      }
+      const provUrl = String(provSnap.data.apiUrl || '').trim();
+      const provKey = String(provSnap.data.apiKey || '').trim();
+      if (!provUrl || !provKey) {
+        return internalOrderData;
+      }
+
+      const remote = (await deps.callUpstreamSmmV2(provUrl, provKey, {
+        action: 'status',
+        order: providerOrderId,
+      })) as Record<string, unknown>;
+
+      const mappedStatus = deps.mapProviderStatusToInternal(String(remote.status ?? currentStatus));
+      const nextStartCount =
+        remote.start_count !== undefined && Number.isFinite(Number(remote.start_count))
+          ? Math.max(0, Number(remote.start_count))
+          : Number(internalOrderData.startCount ?? 0);
+      const nextRemains =
+        remote.remains !== undefined && Number.isFinite(Number(remote.remains))
+          ? Math.max(0, Number(remote.remains))
+          : mappedStatus === 'Completed'
+            ? 0
+            : Number(internalOrderData.remains ?? apiOrderData.quantity ?? 0);
+
+      const fullDbPrefix = `projects/${fbTarget.projectId}/databases/${fbTarget.databaseId}/documents`;
+      await fetch(`${firestoreBaseUrl(fbTarget)}:commit`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          writes: [
+            {
+              update: {
+                name: `${fullDbPrefix}/orders/${internalOrderId}`,
+                fields: encodeFsFields({
+                  status: mappedStatus,
+                  startCount: nextStartCount,
+                  remains: nextRemains,
+                }),
+              },
+              updateMask: { fieldPaths: ['status', 'startCount', 'remains'] },
+              updateTransforms: [
+                { fieldPath: 'lastCheckedAt', setToServerValue: 'REQUEST_TIME' },
+                { fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' },
+              ],
+            },
+            {
+              update: {
+                name: `${fullDbPrefix}/apiOrders/${apiOrderId}`,
+                fields: encodeFsFields({
+                  status: mappedStatus,
+                  startCount: nextStartCount,
+                  remains: nextRemains,
+                }),
+              },
+              updateMask: { fieldPaths: ['status', 'startCount', 'remains'] },
+              updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }],
+            },
+          ],
+        }),
+      }).catch(() => undefined);
+
+      return {
+        ...internalOrderData,
+        status: mappedStatus,
+        startCount: nextStartCount,
+        remains: nextRemains,
+      };
+    } catch {
+      return internalOrderData;
+    }
+  };
 
   /**
    * Admin-only diagnostic check for Gateway Server Readiness.
@@ -503,12 +611,12 @@ export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
     try {
       const target = deps.resolveRequestFirebaseTarget({});
       await deps.verifyAdminViaFirestoreRest(idToken, target);
+      const authStatus = await getGatewayBackendAuthStatus(target);
       res.json({
         ok: true,
         data: {
-          serviceAccountConfigured: hasServiceAccountConfigured(),
-          lockStatus: getPublicLockStatus(),
-          pepperConfigured: Boolean((process.env.GATEWAY_KEY_PEPPER || '').trim()),
+          backendAuthConfigured: authStatus.backendAuthConfigured,
+          authMode: authStatus.authMode,
         },
       });
     } catch (err) {
@@ -793,17 +901,19 @@ export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
       return;
     }
 
-    if (!hasServiceAccountConfigured()) {
+    const fbTarget = deps.resolveRequestFirebaseTarget({});
+    let accessToken = '';
+    try {
+      accessToken = await getServiceAccountAccessToken(fbTarget);
+    } catch {
       res.status(503).json({
         error:
-          'RJ WORLD BD Public API Gateway requires FIREBASE_SERVICE_ACCOUNT_JSON on the server host.',
-        code: 'GATEWAY_SERVICE_ACCOUNT_REQUIRED',
+          'Reseller API Gateway backend credentials are not available on this host. Configure Application Default Credentials or FIREBASE_SERVICE_ACCOUNT_JSON.',
+        code: 'GATEWAY_BACKEND_CREDENTIALS_REQUIRED',
       });
       return;
     }
 
-    const fbTarget = deps.resolveRequestFirebaseTarget({});
-    let accessToken = '';
     let matchedCustomerId = '';
     let matchedUserId = '';
     let matchedKeyId = '';
@@ -829,7 +939,6 @@ export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
     };
 
     try {
-      accessToken = await getServiceAccountAccessToken();
 
       // 0. Check global gateway toggle & settings
       const gwSettingsSnap = await getDocRawWithToken(fbTarget, accessToken, 'settings/apiGateway');
@@ -1010,14 +1119,21 @@ export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
             await failAndLog(404, 'Incorrect order ID.');
             return;
           }
-          // Sync latest safe status from internal orders doc if present
+          // Sync latest safe status from internal orders doc + live upstream provider if active
           const internalOrdId = String(apiOrdSnap.data.internalOrderId || singleOrder);
           const intOrdSnap = await getDocRawWithToken(
             fbTarget,
             accessToken,
             `orders/${internalOrdId}`
           );
-          const effective = intOrdSnap.exists ? intOrdSnap.data : apiOrdSnap.data;
+          const effective = await syncResellerOrderFromUpstream(
+            fbTarget,
+            accessToken,
+            singleOrder,
+            apiOrdSnap.data,
+            internalOrdId,
+            intOrdSnap.exists ? intOrdSnap.data : apiOrdSnap.data
+          );
 
           await writeGatewayRequestLog(fbTarget, accessToken, {
             customerId: matchedCustomerId,
@@ -1064,7 +1180,14 @@ export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
             accessToken,
             `orders/${internalOrdId}`
           );
-          const effective = intOrdSnap.exists ? intOrdSnap.data : apiOrdSnap.data;
+          const effective = await syncResellerOrderFromUpstream(
+            fbTarget,
+            accessToken,
+            oid,
+            apiOrdSnap.data,
+            internalOrdId,
+            intOrdSnap.exists ? intOrdSnap.data : apiOrdSnap.data
+          );
           bulkResult[oid] = {
             charge: Number(apiOrdSnap.data.charge ?? 0).toFixed(2),
             start_count: String(Number(effective.startCount ?? 0)),

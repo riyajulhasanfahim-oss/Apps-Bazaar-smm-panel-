@@ -231,7 +231,7 @@ export class FirestoreDataClient implements IDataClient {
       return docs.map((data) => ({
         id: data.id as PlatformId,
         name: data.name,
-        shortName: data.name.split(' ')[0],
+        shortName: data.id === 'x' || data.name.toLowerCase().startsWith('x ') ? 'X' : data.name,
         description: data.description ?? '',
         accentColor: '#6D28D9',
         bgTint: 'bg-violet-50',
@@ -247,18 +247,33 @@ export class FirestoreDataClient implements IDataClient {
     if (!services) return demoClient.getServices();
 
     try {
-      const [snap, hideDemo] = await Promise.all([
+      const [snap, catSnap, hideDemo] = await Promise.all([
         getDocs(collection(services.db, FIRESTORE_COLLECTIONS.services)),
+        getDocs(collection(services.db, FIRESTORE_COLLECTIONS.categories)),
         shouldHideDemoCatalog(),
       ]);
       if (snap.empty) {
         return hideDemo ? [] : demoClient.getServices();
       }
 
+      const categoryStatusMap = new Map<string, string>();
+      catSnap.docs.forEach((d) => {
+        const cat = d.data() as FirestoreCategoryDoc;
+        categoryStatusMap.set(cat.id, cat.status);
+      });
+
       // Strictly omit providerId, providerServiceId, and costPrice from customer DTOs
       return snap.docs
         .map((d) => d.data() as FirestoreServiceDoc)
-        .filter((s) => s.status === 'active' && (!hideDemo || !s.isDemo))
+        .filter((s) => {
+          if (s.status !== 'active') return false;
+          if (hideDemo && s.isDemo) return false;
+          if (categoryStatusMap.size > 0) {
+            const catStatus = categoryStatusMap.get(s.categoryId);
+            if (catStatus && catStatus !== 'active') return false;
+          }
+          return true;
+        })
         .map((s) => ({
           id: s.id,
           categoryId: s.categoryId as PlatformId,

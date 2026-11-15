@@ -11,7 +11,6 @@ import {
   KeyRound,
   Layers,
   Loader2,
-  Lock,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -62,7 +61,7 @@ const PERM_OPTIONS: Array<{ id: ApiKeyPermission; label: string }> = [
 ];
 
 export function AdminApiGatewayView() {
-  const { systemSettings, gatewayLock, showToast } = useApp();
+  const { systemSettings, showToast } = useApp();
   const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
 
   const [tab, setTab] = useState<GatewayAdminTab>('overview');
@@ -136,8 +135,6 @@ export function AdminApiGatewayView() {
   const [instNote, setInstNote] = useState('');
   const [instSaving, setInstSaving] = useState(false);
 
-  // Env snippet drawer for a selected installation
-  const [envSnippetInst, setEnvSnippetInst] = useState<WebsiteInstallationItem | null>(null);
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
 
@@ -481,7 +478,7 @@ export function AdminApiGatewayView() {
     setInstBuyerName(firstCus?.name || '');
     setInstDomain(firstCus?.websiteDomain || '');
     setInstVersion('1.0.0');
-    setInstLocked(gwSettings.defaultLockMode);
+    setInstLocked(false);
     setInstStatus('active');
     setInstNote('');
     setInstModalOpen(true);
@@ -547,7 +544,7 @@ export function AdminApiGatewayView() {
         requireIdempotencyKey: gwSettings.requireIdempotencyKey,
         autoDispatchEnabled: gwSettings.autoDispatchEnabled,
         allowCustomerSelfKeyGen: gwSettings.allowCustomerSelfKeyGen,
-        defaultLockMode: gwSettings.defaultLockMode,
+        defaultLockMode: false,
       });
       showToast({
         title: 'Gateway Settings Saved',
@@ -620,17 +617,6 @@ export function AdminApiGatewayView() {
         </div>
       </div>
 
-      {gatewayLock.locked && (
-        <div className="flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-950">
-          <Lock className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
-          <span>
-            This deployment currently has <code className="font-mono font-bold">RJW_GATEWAY_LOCKED=true</code>{' '}
-            active (bound to {gatewayLock.providerLabel}). Master API Gateway settings here apply when
-            hosting the central RJ WORLD BD provider server.
-          </span>
-        </div>
-      )}
-
       {/* Segmented Navigation */}
       <div className="flex items-center gap-1.5 overflow-x-auto border-b border-slate-200 pb-2">
         {navTabs.map((item) => {
@@ -683,7 +669,7 @@ export function AdminApiGatewayView() {
 
                 <div className="grid gap-3 sm:grid-cols-3 text-xs">
                   <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 flex items-start gap-2">
-                    {serverStatus?.serviceAccountConfigured ? (
+                    {serverStatus?.backendAuthConfigured ? (
                       <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
                     ) : (
                       <ShieldAlert className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
@@ -691,9 +677,11 @@ export function AdminApiGatewayView() {
                     <div>
                       <p className="font-semibold text-slate-900">External /api/v2 Auth</p>
                       <p className="text-slate-600 mt-0.5">
-                        {serverStatus?.serviceAccountConfigured
-                          ? 'Service account configured cleanly.'
-                          : 'Set FIREBASE_SERVICE_ACCOUNT_JSON on host to serve unauthenticated external panel POST /api/v2 calls.'}
+                        {serverStatus?.backendAuthConfigured
+                          ? serverStatus.authMode === 'adc_metadata'
+                            ? 'Cloud host ADC metadata token active.'
+                            : 'Firebase service account configured cleanly.'
+                          : 'Configure host ADC or FIREBASE_SERVICE_ACCOUNT_JSON to serve reseller POST /api/v2 calls.'}
                       </p>
                     </div>
                   </div>
@@ -701,11 +689,9 @@ export function AdminApiGatewayView() {
                   <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 flex items-start gap-2">
                     <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold text-slate-900">Key Hashing Pepper</p>
+                      <p className="font-semibold text-slate-900">Key Hashing Security</p>
                       <p className="text-slate-600 mt-0.5">
-                        {serverStatus?.pepperConfigured
-                          ? 'HMAC-SHA256 GATEWAY_KEY_PEPPER active.'
-                          : 'Using SHA-256 hashing (set GATEWAY_KEY_PEPPER for HMAC hardening).'}
+                        Standard SHA-256 hashed verification (zero-config, plaintext never persisted).
                       </p>
                     </div>
                   </div>
@@ -1425,13 +1411,6 @@ export function AdminApiGatewayView() {
                               <div className="flex items-center justify-end gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => setEnvSnippetInst(inst)}
-                                  className="rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-800"
-                                >
-                                  Lock .env
-                                </button>
-                                <button
-                                  type="button"
                                   onClick={() => openEditInstallation(inst)}
                                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700"
                                 >
@@ -1623,12 +1602,7 @@ export function AdminApiGatewayView() {
                   {
                     key: 'allowCustomerSelfKeyGen' as const,
                     label: 'Allow Customers to Generate Own Keys',
-                    desc: 'Lets active API customers issue/rotate keys inside their dashboard.',
-                  },
-                  {
-                    key: 'defaultLockMode' as const,
-                    label: 'Default Buyer Website Lock Mode',
-                    desc: 'Pre-select API Lock Mode when registering new white-label installations.',
+                    desc: 'Lets active resellers issue/rotate keys inside their API dashboard.',
                   },
                 ].map((opt) => (
                   <label
@@ -2073,59 +2047,6 @@ export function AdminApiGatewayView() {
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Buyer Server Lock .env Modal */}
-      {envSnippetInst && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-xs"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="font-display text-lg font-extrabold text-slate-950">
-                  Buyer Server Lock Environment
-                </h2>
-                <p className="text-xs text-slate-500">
-                  {envSnippetInst.buyerName} · {envSnippetInst.domain}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setEnvSnippetInst(null)}
-                className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-400 hover:bg-slate-100"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <pre className="overflow-x-auto rounded-2xl bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-100">
-              {`RJW_GATEWAY_LOCKED=${envSnippetInst.apiLocked ? 'true' : 'false'}
-RJW_GATEWAY_BASE_URL=${baseGatewayUrl}
-RJW_LOCKED_API_KEY=<PASTE_BUYER_PLAINTEXT_API_KEY>
-RJW_INSTALLATION_ID=${envSnippetInst.installationId}
-RJW_API_CUSTOMER_ID=${envSnippetInst.customerId}`}
-            </pre>
-
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  copyText(
-                    `RJW_GATEWAY_LOCKED=${envSnippetInst.apiLocked ? 'true' : 'false'}\nRJW_GATEWAY_BASE_URL=${baseGatewayUrl}\nRJW_LOCKED_API_KEY=<PASTE_BUYER_PLAINTEXT_API_KEY>\nRJW_INSTALLATION_ID=${envSnippetInst.installationId}\nRJW_API_CUSTOMER_ID=${envSnippetInst.customerId}`,
-                    'Lock Env Copied'
-                  )
-                }
-                className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800"
-              >
-                <Copy className="h-3.5 w-3.5" />
-                <span>Copy Env Block</span>
-              </button>
-            </div>
           </div>
         </div>
       )}

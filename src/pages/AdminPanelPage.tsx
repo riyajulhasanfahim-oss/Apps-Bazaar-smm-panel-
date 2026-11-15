@@ -47,6 +47,7 @@ export function AdminPanelPage() {
     openSetupWizard,
     signInAdminWithGoogle,
     signOutAdmin,
+    refreshCustomerData,
   } = useApp();
 
   const [activeSection, setActiveSection] = useState<AdminSectionId>('dashboard');
@@ -218,7 +219,10 @@ export function AdminPanelPage() {
             )}
             <button
               type="button"
-              onClick={() => setViewMode('landing')}
+              onClick={() => {
+                refreshCustomerData().catch(() => undefined);
+                setViewMode('landing');
+              }}
               className="hidden sm:inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
@@ -226,7 +230,10 @@ export function AdminPanelPage() {
             </button>
             <button
               type="button"
-              onClick={() => setViewMode('dashboard')}
+              onClick={() => {
+                refreshCustomerData().catch(() => undefined);
+                setViewMode('dashboard');
+              }}
               className="inline-flex h-9 items-center rounded-xl bg-violet-700 px-3 text-xs font-semibold text-white hover:bg-violet-800 whitespace-nowrap"
             >
               Customer Panel

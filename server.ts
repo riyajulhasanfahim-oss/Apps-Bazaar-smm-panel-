@@ -3,7 +3,7 @@ import express, { type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getWebsiteLockConfig, registerGatewayRoutes } from './server/gateway.ts';
+import { registerGatewayRoutes } from './server/gateway.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -386,53 +386,36 @@ async function startServer() {
 
       const serviceId = String(orderDoc.serviceId || '').trim();
       const serviceDoc = await fetchFirestoreDocWithToken(`services/${serviceId}`, idToken, fbTarget);
-      const lockConfig = getWebsiteLockConfig();
 
-      let providerId = '';
-      let apiUrl = '';
       const providerServiceId = String(serviceDoc.providerServiceId || serviceId || '').trim();
+      const providerId =
+        providerIdOverride ||
+        String(orderDoc.providerId || '').trim() ||
+        String(serviceDoc.providerId || '').trim();
 
-      if (lockConfig.locked) {
-        if (!lockConfig.baseUrl || !lockConfig.lockedApiKey) {
-          res.status(503).json({
-            ok: false,
-            error: 'Locked RJ WORLD BD API credentials are not configured on the server.',
-          });
-          return;
-        }
-        providerId = 'rjw_official_gateway';
-        apiUrl = lockConfig.baseUrl;
-        secretKey = lockConfig.lockedApiKey;
-      } else {
-        providerId =
-          providerIdOverride ||
-          String(orderDoc.providerId || '').trim() ||
-          String(serviceDoc.providerId || '').trim();
+      if (!providerId || !providerServiceId) {
+        res.status(400).json({
+          ok: false,
+          error: 'Service is not mapped to an API Provider and Provider Service ID.',
+        });
+        return;
+      }
 
-        if (!providerId || !providerServiceId) {
-          res.status(400).json({
-            ok: false,
-            error: 'Service is not mapped to an API Provider and Provider Service ID.',
-          });
-          return;
-        }
+      const providerDoc = await fetchFirestoreDocWithToken(
+        `apiProviders/${providerId}`,
+        idToken,
+        fbTarget
+      );
+      if (providerDoc.status !== 'active') {
+        res.status(400).json({ ok: false, error: 'Mapped API provider is currently inactive.' });
+        return;
+      }
 
-        const providerDoc = await fetchFirestoreDocWithToken(
-          `apiProviders/${providerId}`,
-          idToken,
-          fbTarget
-        );
-        if (providerDoc.status !== 'active') {
-          res.status(400).json({ ok: false, error: 'Mapped API provider is currently inactive.' });
-          return;
-        }
-
-        apiUrl = String(providerDoc.apiUrl || '').trim();
-        secretKey = String(providerDoc.apiKey || '').trim();
-        if (!apiUrl || !secretKey) {
-          res.status(400).json({ ok: false, error: 'Provider API credentials are incomplete.' });
-          return;
-        }
+      const apiUrl = String(providerDoc.apiUrl || '').trim();
+      secretKey = String(providerDoc.apiKey || '').trim();
+      if (!apiUrl || !secretKey) {
+        res.status(400).json({ ok: false, error: 'Provider API credentials are incomplete.' });
+        return;
       }
 
       const addRes = (await callUpstreamSmmV2(apiUrl, secretKey, {
@@ -515,23 +498,13 @@ async function startServer() {
         }
       }
 
-      const lockConfig = getWebsiteLockConfig();
-      let apiUrl = '';
-      if (lockConfig.locked) {
-        if (!lockConfig.baseUrl || !lockConfig.lockedApiKey) {
-          throw new Error('Locked RJ WORLD BD API credentials are missing on the server.');
-        }
-        apiUrl = lockConfig.baseUrl;
-        secretKey = lockConfig.lockedApiKey;
-      } else {
-        const providerDoc = await fetchFirestoreDocWithToken(
-          `apiProviders/${providerId}`,
-          idToken,
-          fbTarget
-        );
-        apiUrl = String(providerDoc.apiUrl || '').trim();
-        secretKey = String(providerDoc.apiKey || '').trim();
-      }
+      const providerDoc = await fetchFirestoreDocWithToken(
+        `apiProviders/${providerId}`,
+        idToken,
+        fbTarget
+      );
+      const apiUrl = String(providerDoc.apiUrl || '').trim();
+      secretKey = String(providerDoc.apiKey || '').trim();
 
       if (!apiUrl || !secretKey) {
         throw new Error('Provider credentials are missing or incomplete.');
@@ -616,27 +589,7 @@ async function startServer() {
     const fbTarget = resolveRequestFirebaseTarget(payload);
 
     try {
-      const lockConfig = getWebsiteLockConfig();
-      if (lockConfig.locked) {
-        await verifyAdminViaFirestoreRest(idToken, fbTarget);
-        if (apiUrl || apiKey || (providerId && providerId !== 'rjw_official_gateway')) {
-          res.status(403).json({
-            ok: false,
-            error:
-              'Provider configuration is locked to RJ WORLD BD Official API by Master Admin.',
-          });
-          return;
-        }
-        if (!lockConfig.baseUrl || !lockConfig.lockedApiKey) {
-          res.status(503).json({
-            ok: false,
-            error: 'Locked RJ WORLD BD API credentials are not configured on the server.',
-          });
-          return;
-        }
-        apiUrl = lockConfig.baseUrl;
-        apiKey = lockConfig.lockedApiKey;
-      } else if (providerId) {
+      if (providerId) {
         const provDoc = await fetchFirestoreDocWithToken(
           `apiProviders/${providerId}`,
           idToken,

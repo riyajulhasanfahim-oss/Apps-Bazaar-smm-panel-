@@ -234,6 +234,14 @@ export function suggestPlatformAndTypeFromImported(
   else if (combined.includes('tiktok')) categoryId = 'tiktok';
   else if (combined.includes('telegram') || combined.includes('tg ')) categoryId = 'telegram';
   else if (combined.includes('twitter') || combined.includes('x ')) categoryId = 'x';
+  else if (combined.includes('linkedin')) categoryId = 'linkedin';
+  else if (
+    combined.includes('web traffic') ||
+    combined.includes('website traffic') ||
+    combined.includes('webtraffic') ||
+    combined.includes('traffic')
+  )
+    categoryId = 'webtraffic';
 
   let serviceType: ServiceType = 'Other';
   if (combined.includes('follower')) serviceType = 'Followers';

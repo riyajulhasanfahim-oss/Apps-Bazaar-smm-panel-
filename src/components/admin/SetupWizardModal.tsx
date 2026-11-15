@@ -6,7 +6,6 @@ import {
   Database,
   KeyRound,
   Landmark,
-  Lock,
   Palette,
   Plug,
   ShieldCheck,
@@ -54,7 +53,6 @@ export function SetupWizardModal() {
     refreshSetupState,
     refreshSystemSettings,
     refreshCustomerData,
-    gatewayLock,
     showToast,
   } = useApp();
 
@@ -664,44 +662,9 @@ export function SetupWizardModal() {
               <h3 className="font-display text-lg font-extrabold text-slate-950">
                 Step 6 · SMM Provider API Setup
               </h3>
-              {gatewayLock.locked ? (
-                <div className="space-y-4">
-                  <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-4 space-y-2 text-xs">
-                    <div className="flex items-center gap-2 font-bold text-violet-950">
-                      <Lock className="h-4 w-4 text-violet-700" />
-                      <span>Locked to {gatewayLock.providerLabel}</span>
-                    </div>
-                    <p className="text-slate-600 leading-relaxed">
-                      This installation uses server-enforced RJ WORLD BD API credentials (
-                      <code className="font-mono font-semibold">
-                        {gatewayLock.installationId || 'Locked Deployment'}
-                      </code>
-                      ). External upstream provider configuration is disabled.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      try {
-                        await adminService.updateSystemSettings({ providerConfigured: true });
-                        await refreshSetupState();
-                        setStep(7);
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                    className="inline-flex h-10 items-center gap-2 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 disabled:opacity-60"
-                  >
-                    <span>Confirm Official API Binding & Continue</span>
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <p className="text-xs text-slate-600">
-                    Add your primary upstream SMM provider. API keys remain hidden inside Admin-only Firestore rules &amp; server proxy routes.
-                  </p>
+              <p className="text-xs text-slate-600">
+                Add your primary upstream SMM provider. API keys remain hidden inside Admin-only Firestore rules &amp; server proxy routes.
+              </p>
                   <div className="space-y-3">
                     <div>
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -757,8 +720,6 @@ export function SetupWizardModal() {
                       Skip for Now
                     </button>
                   </div>
-                </>
-              )}
             </div>
           )}
 

@@ -26,7 +26,18 @@ export function PlatformIcon({ platform, size = 'md' }: PlatformIconProps) {
           ? 'h-6 w-6'
           : 'h-5 w-5';
 
-  switch (platform) {
+  const normalized = String(platform || '').toLowerCase().trim();
+  const resolved =
+    normalized === 'linkedin' || normalized.includes('linkedin')
+      ? 'linkedin'
+      : normalized === 'webtraffic' ||
+          normalized === 'web-traffic' ||
+          normalized === 'web_traffic' ||
+          normalized.includes('traffic')
+        ? 'webtraffic'
+        : normalized;
+
+  switch (resolved) {
     case 'instagram':
       return (
         <span
@@ -93,6 +104,26 @@ export function PlatformIcon({ platform, size = 'md' }: PlatformIconProps) {
           <svg viewBox="0 0 24 24" fill="currentColor" className={iconClass}>
             <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.45-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z" />
           </svg>
+        </span>
+      );
+    case 'linkedin':
+      return (
+        <span
+          className={`${boxClass} inline-flex shrink-0 items-center justify-center bg-[#0A66C2] text-white shadow-xs`}
+          aria-hidden="true"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" className={iconClass}>
+            <path d="M6.94 8.5H3.56V19.5H6.94V8.5ZM5.25 3.5A1.96 1.96 0 1 0 5.25 7.42A1.96 1.96 0 1 0 5.25 3.5ZM20.44 13.02C20.44 9.88 18.76 8.22 16.16 8.22C14.37 8.22 13.48 9.2 13.02 9.93V8.5H9.65C9.7 9.48 9.65 19.5 9.65 19.5H13.02V13.36C13.02 13.02 13.05 12.69 13.15 12.45C13.42 11.78 14.03 11.09 15.07 11.09C16.41 11.09 17.06 12.11 17.06 13.6V19.5H20.44V13.02Z" />
+          </svg>
+        </span>
+      );
+    case 'webtraffic':
+      return (
+        <span
+          className={`${boxClass} inline-flex shrink-0 items-center justify-center bg-gradient-to-tr from-emerald-500 to-cyan-600 text-white shadow-xs`}
+          aria-hidden="true"
+        >
+          <Globe className={iconClass} />
         </span>
       );
     case 'more':

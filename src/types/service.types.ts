@@ -5,6 +5,9 @@ export type PlatformId =
   | 'tiktok'
   | 'telegram'
   | 'x'
+  | 'linkedin'
+  | 'webtraffic'
+  | 'web-traffic'
   | 'more';
 
 export interface PlatformCategory {

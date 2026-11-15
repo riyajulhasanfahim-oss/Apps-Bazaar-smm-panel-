@@ -22,7 +22,7 @@ import {
 import { SERVICE_TYPE_OPTIONS, type ServiceType } from '../../types/service.types';
 
 export function AdminServicesView() {
-  const { showToast, gatewayLock } = useApp();
+  const { showToast, refreshCustomerData } = useApp();
   const [services, setServices] = useState<AdminServiceItem[]>([]);
   const [categories, setCategories] = useState<AdminCategoryItem[]>([]);
   const [providers, setProviders] = useState<AdminApiProviderItem[]>([]);
@@ -159,7 +159,7 @@ export function AdminServicesView() {
 
   const openCreate = () => {
     setEditing(null);
-    setCategoryId(categories[0]?.id ?? 'instagram');
+    setCategoryId(categoryFilter !== 'all' ? categoryFilter : (categories[0]?.id ?? 'instagram'));
     setServiceType('Followers');
     setName('');
     setDescription('');
@@ -232,7 +232,7 @@ export function AdminServicesView() {
         tone: 'success',
       });
       setModalOpen(false);
-      await loadData();
+      await Promise.all([loadData(), refreshCustomerData().catch(() => undefined)]);
     } catch (err) {
       showToast({
         title: 'Save Failed',
@@ -256,6 +256,7 @@ export function AdminServicesView() {
         description: `${srv.name} is now ${nextStatus}.`,
         tone: 'success',
       });
+      refreshCustomerData().catch(() => undefined);
     } catch (err) {
       showToast({
         title: 'Update Failed',
@@ -279,6 +280,7 @@ export function AdminServicesView() {
         tone: 'success',
       });
       setSelectedIds([]);
+      refreshCustomerData().catch(() => undefined);
     } catch (err) {
       showToast({
         title: 'Bulk Update Failed',
@@ -325,6 +327,7 @@ export function AdminServicesView() {
       }
 
       setDeleteTargets(null);
+      refreshCustomerData().catch(() => undefined);
     } catch (err) {
       showToast({
         title: 'Delete Failed',
@@ -921,32 +924,23 @@ export function AdminServicesView() {
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
                     Provider (Admin Only)
                   </label>
-                  {gatewayLock.locked ? (
-                    <input
-                      type="text"
-                      disabled
-                      value={`${gatewayLock.providerLabel} (Locked)`}
-                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-100 px-3 text-xs font-semibold text-slate-700"
-                    />
-                  ) : (
-                    <select
-                      value={providerId}
-                      onChange={(e) => setProviderId(e.target.value)}
-                      className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm"
-                    >
-                      <option value="">Manual / No API Provider</option>
-                      {providers.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.status})
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                  <select
+                    value={providerId}
+                    onChange={(e) => setProviderId(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm"
+                  >
+                    <option value="">Manual / No API Provider</option>
+                    {providers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.status})
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    {gatewayLock.locked ? 'Gateway Service ID' : 'Provider Service ID'}
+                    Provider Service ID
                   </label>
                   <input
                     type="text"

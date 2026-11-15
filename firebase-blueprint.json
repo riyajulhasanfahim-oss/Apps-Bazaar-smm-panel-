@@ -360,7 +360,7 @@
     },
     "ApiCustomer": {
       "title": "ApiCustomer",
-      "description": "External reseller or sold buyer installation API customer account with isolated API wallet and rate limit.",
+      "description": "Reseller API customer account with isolated API wallet, discount tier, and rate limit.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -477,7 +477,7 @@
     },
     "WebsiteInstallation": {
       "title": "WebsiteInstallation",
-      "description": "Registry of sold white-label buyer website installations locked to RJ WORLD BD API Gateway.",
+      "description": "Registry of connected reseller websites and panels using the RJ WORLD BD Reseller API.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 64 },
