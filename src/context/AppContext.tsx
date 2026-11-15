@@ -1,0 +1,1382 @@
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import type { User as FirebaseAuthUser } from 'firebase/auth';
+import { collection, doc, limit, onSnapshot, query, where } from 'firebase/firestore';
+import type { DashboardTab } from '../config/navigation.config';
+import { catalogService } from '../services/services.service';
+import { ordersService } from '../services/orders.service';
+import { walletService } from '../services/wallet.service';
+import { supportService } from '../services/support.service';
+import { adminService } from '../services/admin.service';
+import {
+  apiGatewayService,
+  DEFAULT_LOCK_STATUS,
+  type GatewayLockStatus,
+} from '../services/apiGateway.service';
+import {
+  formatFirestoreTimestamp,
+  getLocalReadBroadcastIds,
+  mapCustomerOrderDoc,
+} from '../services/firebaseDataClient';
+import {
+  authService,
+  type AuthenticatedUserProfile,
+  type LoginInput,
+  type RegisterInput,
+  type UpdateProfileInput,
+} from '../services/auth.service';
+import {
+  getFirebaseServices,
+  signInWithGooglePopup,
+  signOutFirebase,
+  subscribeFirebaseAuth,
+} from '../lib/firebase/client';
+import {
+  initializeDatabase,
+  inspectSetupState,
+  type DatabaseInitReport,
+  type SetupState,
+} from '../lib/firestore/initializer';
+import { toUserFriendlyFirebaseError } from '../lib/firestore/errors';
+import { APP_CONFIG } from '../config/app.config';
+import {
+  getAdminPermissions,
+  getAdminRoleLabel,
+  type AdminPermissions,
+} from '../lib/permissions';
+import {
+  FIRESTORE_COLLECTIONS,
+  type AdminStaffRole,
+  type FirestoreNotificationDoc,
+  type FirestoreOrderDoc,
+  type FirestorePaymentDoc,
+  type FirestoreSettingsDoc,
+  type FirestoreSupportTicketDoc,
+  type FirestoreUserDoc,
+  type UserAccountRole,
+  type UserAccountStatus,
+} from '../lib/firestore/collections';
+import type {
+  CreateOrderInput,
+  CreateTicketInput,
+  CustomerPaymentRequest,
+  CustomerProfile,
+  NotificationItem,
+  OrderRecord,
+  OrderStatsSummary,
+  PaymentMethodItem,
+  PlatformCategory,
+  PlatformId,
+  SmmService,
+  SupportTicket,
+  TicketPriority,
+  TicketSubject,
+  WalletSummary,
+  WalletTransaction,
+} from '../types';
+
+export type AppViewMode =
+  | 'landing'
+  | 'login'
+  | 'register'
+  | 'forgot-password'
+  | 'dashboard'
+  | 'admin';
+
+export type AuthModalMode = 'login' | 'register' | null;
+export type UserRole = UserAccountRole;
+
+export interface ToastMessage {
+  id: string;
+  title: string;
+  description?: string;
+  tone: 'success' | 'warning' | 'error' | 'info';
+}
+
+export interface AuthActionResult {
+  success: boolean;
+  error?: string;
+}
+
+interface AppContextValue {
+  viewMode: AppViewMode;
+  setViewMode: (mode: AppViewMode) => void;
+  navigateProtected: (tab?: DashboardTab) => void;
+  activeTab: DashboardTab;
+  setActiveTab: (tab: DashboardTab) => void;
+  authModalMode: AuthModalMode;
+  openAuthModal: (mode: 'login' | 'register') => void;
+  closeAuthModal: () => void;
+  selectedPlatform: PlatformId;
+  setSelectedPlatform: (id: PlatformId) => void;
+  selectPlatformForOrder: (id: PlatformId) => void;
+  selectedOrderId: string | null;
+  setSelectedOrderId: (id: string | null) => void;
+  openOrderDetails: (orderId: string) => void;
+  selectedTicketId: string | null;
+  setSelectedTicketId: (id: string | null) => void;
+  openTicketDetails: (ticketId: string) => void;
+  ticketDraftOrderRef: string;
+  setTicketDraftOrderRef: (ref: string) => void;
+  openSupportForOrder: (orderNumber: string) => void;
+  handleNotificationClick: (item: NotificationItem) => Promise<void>;
+  platforms: PlatformCategory[];
+  services: SmmService[];
+  orders: OrderRecord[];
+  orderStats: OrderStatsSummary;
+  profile: CustomerProfile | null;
+  accountStatus: UserAccountStatus;
+  wallet: WalletSummary;
+  paymentMethods: PaymentMethodItem[];
+  paymentRequests: CustomerPaymentRequest[];
+  transactions: WalletTransaction[];
+  notifications: NotificationItem[];
+  tickets: SupportTicket[];
+  systemSettings: Partial<FirestoreSettingsDoc> | null;
+  refreshSystemSettings: () => Promise<void>;
+  refreshCustomerData: () => Promise<void>;
+  refreshWalletLedger: () => Promise<void>;
+  dataError: string | null;
+  isLoading: boolean;
+  toast: ToastMessage | null;
+  dismissToast: () => void;
+  showToast: (toast: Omit<ToastMessage, 'id'>) => void;
+  placeDemoOrder: (input: CreateOrderInput) => Promise<boolean>;
+  addDemoFunds: (amount: number, method: string) => void;
+  submitPaymentRequest: (input: {
+    paymentMethodId: string;
+    amount: number;
+    transactionId: string;
+  }) => Promise<boolean>;
+  cancelPaymentRequest: (paymentId: string) => Promise<void>;
+  submitDemoTicket: (input: CreateTicketInput) => Promise<void>;
+  markNotificationRead: (item: NotificationItem) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
+  // Phase 2 & 3: Auth, User Profile, RBAC, and Setup State
+  firebaseUser: FirebaseAuthUser | null;
+  userRole: UserRole;
+  staffRole: AdminStaffRole | null;
+  adminPermissions: AdminPermissions;
+  authReady: boolean;
+  setupState: SetupState;
+  setupWizardOpen: boolean;
+  openSetupWizard: () => void;
+  closeSetupWizard: () => void;
+  lastInitReport: DatabaseInitReport | null;
+  refreshSetupState: () => Promise<SetupState>;
+  runDatabaseInitialization: (options?: { seedDemo?: boolean }) => Promise<DatabaseInitReport>;
+  signInAdminWithGoogle: () => Promise<boolean>;
+  signOutAdmin: () => Promise<void>;
+  registerWithEmail: (input: RegisterInput) => Promise<AuthActionResult>;
+  loginWithEmail: (input: LoginInput) => Promise<AuthActionResult>;
+  loginWithGoogle: () => Promise<AuthActionResult>;
+  sendPasswordReset: (email: string) => Promise<AuthActionResult>;
+  updateUserProfile: (input: UpdateProfileInput) => Promise<AuthActionResult>;
+  logoutUser: () => Promise<void>;
+  gatewayLock: GatewayLockStatus;
+  refreshGatewayLock: () => Promise<GatewayLockStatus>;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+function toCustomerProfile(
+  authProfile: AuthenticatedUserProfile,
+  staffRole?: AdminStaffRole | null
+): CustomerProfile {
+  const initials = authProfile.name
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+
+  return {
+    id: authProfile.uid,
+    fullName: authProfile.name,
+    username: authProfile.email.split('@')[0] || 'member',
+    email: authProfile.email,
+    phone: authProfile.phone,
+    photoUrl: authProfile.photoUrl,
+    role: authProfile.role,
+    status: authProfile.status,
+    tierLabel: staffRole
+      ? getAdminRoleLabel(staffRole)
+      : authProfile.role === 'admin'
+      ? 'Administrator'
+      : 'Customer Account',
+    joinedDate: authProfile.memberSince,
+    avatarInitials: initials || 'US',
+  };
+}
+
+export function AppProvider({ children }: { children: React.ReactNode }) {
+  const [viewMode, setViewModeState] = useState<AppViewMode>('landing');
+  const [activeTab, setActiveTab] = useState<DashboardTab>('home');
+  const [authModalMode, setAuthModalMode] = useState<AuthModalMode>(null);
+  const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>('instagram');
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [ticketDraftOrderRef, setTicketDraftOrderRef] = useState<string>('');
+
+  const [platforms, setPlatforms] = useState<PlatformCategory[]>([]);
+  const [services, setServices] = useState<SmmService[]>([]);
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [orderStats, setOrderStats] = useState<OrderStatsSummary>({
+    totalOrders: 0,
+    completedOrders: 0,
+    pendingOrders: 0,
+  });
+  const [profile, setProfile] = useState<CustomerProfile | null>(null);
+  const [accountStatus, setAccountStatus] = useState<UserAccountStatus>('active');
+  const [wallet, setWallet] = useState<WalletSummary>({
+    balance: 0,
+    totalSpent: 0,
+    totalDeposited: 0,
+  });
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodItem[]>([]);
+  const [paymentRequests, setPaymentRequests] = useState<CustomerPaymentRequest[]>([]);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [systemSettings, setSystemSettings] = useState<Partial<FirestoreSettingsDoc> | null>(null);
+  const [dataError, setDataError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseAuthUser | null>(null);
+  const [userRole, setUserRole] = useState<UserRole>('user');
+  const [staffRole, setStaffRole] = useState<AdminStaffRole | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [setupWizardOpen, setSetupWizardOpen] = useState<boolean>(false);
+  const [setupState, setSetupState] = useState<SetupState>({
+    setupRequired: true,
+    firebaseConnected: false,
+    databaseInitialized: false,
+    adminConfigured: false,
+    brandingConfigured: false,
+    providerConfigured: false,
+    paymentConfigured: false,
+    setupCompleted: false,
+    productionMode: false,
+    demoDataEnabled: true,
+    installationId: '',
+    lastError: null,
+  });
+  const [lastInitReport, setLastInitReport] = useState<DatabaseInitReport | null>(null);
+  const [gatewayLock, setGatewayLock] = useState<GatewayLockStatus>(DEFAULT_LOCK_STATUS);
+
+  const orderInFlightRef = useRef<boolean>(false);
+  const lastOrderSigRef = useRef<{ sig: string; at: number } | null>(null);
+
+  const adminPermissions = getAdminPermissions(staffRole);
+  const openSetupWizard = useCallback(() => setSetupWizardOpen(true), []);
+  const closeSetupWizard = useCallback(() => setSetupWizardOpen(false), []);
+
+  const showToast = useCallback((next: Omit<ToastMessage, 'id'>) => {
+    const id = String(Date.now());
+    setToast({ ...next, id });
+    window.setTimeout(() => {
+      setToast((prev) => (prev?.id === id ? null : prev));
+    }, 3800);
+  }, []);
+
+  const dismissToast = useCallback(() => setToast(null), []);
+
+  const setViewMode = useCallback(
+    (mode: AppViewMode) => {
+      if (mode === 'dashboard' && authReady && !firebaseUser) {
+        setViewModeState('login');
+        showToast({
+          title: 'Sign in required',
+          description: 'Please sign in to access your customer dashboard.',
+          tone: 'info',
+        });
+        return;
+      }
+      setViewModeState(mode);
+    },
+    [authReady, firebaseUser, showToast]
+  );
+
+  const navigateProtected = useCallback(
+    (tab: DashboardTab = 'home') => {
+      if (!firebaseUser) {
+        setViewModeState('login');
+        showToast({
+          title: 'Sign in required',
+          description: 'Log in to access your dashboard, orders, and wallet.',
+          tone: 'info',
+        });
+        return;
+      }
+      setActiveTab(tab);
+      setViewModeState('dashboard');
+    },
+    [firebaseUser, showToast]
+  );
+
+  const refreshSetupState = useCallback(async (): Promise<SetupState> => {
+    const state = await inspectSetupState();
+    setSetupState(state);
+    return state;
+  }, []);
+
+  const refreshSystemSettings = useCallback(async () => {
+    const sys = await adminService.getSystemSettings();
+    setSystemSettings(sys);
+  }, []);
+
+  const refreshGatewayLock = useCallback(async (): Promise<GatewayLockStatus> => {
+    const status = await apiGatewayService.getPublicLockStatus();
+    setGatewayLock(status);
+    return status;
+  }, []);
+
+  // Synchronize white-label document title, favicon & CSS accent theme variables
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const siteName = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
+    const tagline = systemSettings?.brandTagline?.trim() || APP_CONFIG.brandTagline;
+    document.title = `${siteName} — ${tagline}`;
+
+    const primary = systemSettings?.themeColor?.trim() || '#6D28D9';
+    const secondary = systemSettings?.secondaryColor?.trim() || '#4F46E5';
+    document.documentElement.style.setProperty('--brand-primary', primary);
+    document.documentElement.style.setProperty('--brand-secondary', secondary);
+
+    const favUrl = systemSettings?.favicon?.trim();
+    if (favUrl && /^https?:\/\//i.test(favUrl)) {
+      let linkEl = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+      if (!linkEl) {
+        linkEl = document.createElement('link');
+        linkEl.rel = 'icon';
+        document.head.appendChild(linkEl);
+      }
+      linkEl.href = favUrl;
+    }
+  }, [systemSettings]);
+
+  const hydrateUserWorkspace = useCallback(async (authUser: FirebaseAuthUser | null) => {
+    setDataError(null);
+    setIsLoading(true);
+    try {
+      const [loadedPlatforms, loadedServices, loadedSettings, loadedMethods] = await Promise.all([
+        catalogService.getPlatforms(),
+        catalogService.getAllServices(),
+        adminService.getSystemSettings(),
+        walletService.getActivePaymentMethods().catch(() => []),
+      ]);
+      setPlatforms(loadedPlatforms);
+      setServices(loadedServices);
+      setSystemSettings(loadedSettings);
+      setPaymentMethods(loadedMethods);
+
+      if (loadedPlatforms.length > 0 && !loadedPlatforms.some((p) => p.id === selectedPlatform)) {
+        setSelectedPlatform(loadedPlatforms[0].id);
+      }
+
+      if (!authUser) {
+        setProfile(null);
+        setAccountStatus('active');
+        setUserRole('user');
+        setStaffRole(null);
+        setOrders([]);
+        setOrderStats({ totalOrders: 0, completedOrders: 0, pendingOrders: 0 });
+        setWallet({ balance: 0, totalSpent: 0, totalDeposited: 0 });
+        setPaymentRequests([]);
+        setTransactions([]);
+        setNotifications([]);
+        setTickets([]);
+        return;
+      }
+
+      const [
+        authProfile,
+        staffAccess,
+        loadedOrders,
+        loadedTxns,
+        loadedPayRequests,
+        loadedNotifs,
+        loadedTickets,
+      ] = await Promise.all([
+        authService.ensureAndFetchUserProfile(authUser),
+        adminService.verifyStaffAccess(authUser.uid, authUser.email, authUser.emailVerified),
+        ordersService.getAll().catch(() => []),
+        walletService.getTransactions().catch(() => []),
+        walletService.getMyPaymentRequests().catch(() => []),
+        walletService.getNotifications().catch(() => []),
+        supportService.getTickets().catch(() => []),
+      ]);
+
+      const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
+        ? staffAccess.staffRole
+        : authProfile.role === 'admin'
+        ? 'admin'
+        : null;
+      const effectiveRole: UserRole =
+        authProfile.role === 'admin' || staffAccess.isStaff ? 'admin' : 'user';
+
+      const mappedProfile = toCustomerProfile(
+        {
+          ...authProfile,
+          role: effectiveRole,
+        },
+        resolvedStaffRole
+      );
+
+      const totalDepositedFromLedger = loadedTxns
+        .filter(
+          (t) =>
+            t.type === 'deposit' ||
+            t.type === 'admin_credit' ||
+            (t.type === 'adjustment' && t.amount > 0)
+        )
+        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+      const totalSpentFromOrders = loadedOrders
+        .filter(
+          (o) =>
+            !o.refunded &&
+            o.status !== 'Canceled' &&
+            o.status !== 'Cancelled' &&
+            o.status !== 'Failed'
+        )
+        .reduce((sum, o) => sum + Number(o.charge ?? 0), 0);
+
+      setProfile(mappedProfile);
+      setAccountStatus(authProfile.status);
+      setUserRole(effectiveRole);
+      setStaffRole(resolvedStaffRole);
+      setOrders(loadedOrders);
+      setOrderStats({
+        totalOrders: loadedOrders.length,
+        completedOrders: loadedOrders.filter((o) => o.status === 'Completed').length,
+        pendingOrders: loadedOrders.filter(
+          (o) => o.status === 'Pending' || o.status === 'Processing' || o.status === 'In Progress'
+        ).length,
+      });
+      setWallet({
+        balance: Number(authProfile.balance ?? 0),
+        totalSpent: Number(totalSpentFromOrders.toFixed(2)),
+        totalDeposited: Number(totalDepositedFromLedger.toFixed(2)),
+      });
+      setPaymentRequests(loadedPayRequests);
+      setTransactions(loadedTxns);
+      setNotifications(loadedNotifs);
+      setTickets(loadedTickets);
+    } catch (error) {
+      setDataError(toUserFriendlyFirebaseError(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedPlatform]);
+
+  const refreshCustomerData = useCallback(async () => {
+    await hydrateUserWorkspace(firebaseUser);
+  }, [firebaseUser, hydrateUserWorkspace]);
+
+  const refreshWalletLedger = useCallback(async () => {
+    if (!firebaseUser) return;
+    const [loadedMethods, loadedTxns, loadedPayReqs, loadedNotifs] = await Promise.all([
+      walletService.getActivePaymentMethods().catch(() => []),
+      walletService.getTransactions().catch(() => []),
+      walletService.getMyPaymentRequests().catch(() => []),
+      walletService.getNotifications().catch(() => []),
+    ]);
+    setPaymentMethods(loadedMethods);
+    setTransactions(loadedTxns);
+    setPaymentRequests(loadedPayReqs);
+    setNotifications(loadedNotifs);
+    const totalDepositedFromLedger = loadedTxns
+      .filter(
+        (t) =>
+          t.type === 'deposit' ||
+          t.type === 'admin_credit' ||
+          (t.type === 'adjustment' && t.amount > 0)
+      )
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    setWallet((prev) => ({
+      ...prev,
+      totalDeposited: Number(totalDepositedFromLedger.toFixed(2)),
+    }));
+  }, [firebaseUser]);
+
+  useEffect(() => {
+    let active = true;
+    refreshSetupState();
+    refreshGatewayLock();
+
+    const unsubscribe = subscribeFirebaseAuth(async (user) => {
+      if (!active) return;
+      setFirebaseUser(user);
+      await hydrateUserWorkspace(user);
+      if (!active) return;
+      setAuthReady(true);
+      if (user) {
+        refreshSetupState();
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [hydrateUserWorkspace, refreshGatewayLock, refreshSetupState]);
+
+  // Real-time balance, orders, notifications, tickets & payment status listeners
+  useEffect(() => {
+    if (!firebaseUser) return;
+    const firebaseServices = getFirebaseServices();
+    if (!firebaseServices) return;
+    const uid = firebaseUser.uid;
+
+    const userRef = doc(firebaseServices.db, FIRESTORE_COLLECTIONS.users, uid);
+    const unsubUser = onSnapshot(
+      userRef,
+      (snap) => {
+        if (!snap.exists()) return;
+        const data = snap.data() as FirestoreUserDoc;
+        setWallet((prev) => ({
+          ...prev,
+          balance: Number(data.balance ?? 0),
+        }));
+        setAccountStatus(data.status);
+        setProfile((prev) =>
+          prev
+            ? {
+                ...prev,
+                fullName: data.name || prev.fullName,
+                phone: data.phone ?? prev.phone,
+                photoUrl: data.photoUrl ?? prev.photoUrl,
+                status: data.status,
+              }
+            : prev
+        );
+      },
+      () => undefined
+    );
+
+    const ordersQuery = query(
+      collection(firebaseServices.db, FIRESTORE_COLLECTIONS.orders),
+      where('userId', '==', uid),
+      limit(60)
+    );
+    const unsubOrders = onSnapshot(
+      ordersQuery,
+      (snap) => {
+        const mapped = snap.docs
+          .map((d) => mapCustomerOrderDoc(d.data() as FirestoreOrderDoc))
+          .sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso));
+
+        const spent = mapped
+          .filter(
+            (o) =>
+              !o.refunded &&
+              o.status !== 'Canceled' &&
+              o.status !== 'Cancelled' &&
+              o.status !== 'Failed'
+          )
+          .reduce((sum, o) => sum + Number(o.charge ?? 0), 0);
+
+        setOrders(mapped);
+        setOrderStats({
+          totalOrders: mapped.length,
+          completedOrders: mapped.filter((o) => o.status === 'Completed').length,
+          pendingOrders: mapped.filter(
+            (o) => o.status === 'Pending' || o.status === 'Processing' || o.status === 'In Progress'
+          ).length,
+        });
+        setWallet((prev) => ({
+          ...prev,
+          totalSpent: Number(spent.toFixed(2)),
+        }));
+      },
+      () => undefined
+    );
+
+    const notifsQuery = query(
+      collection(firebaseServices.db, FIRESTORE_COLLECTIONS.notifications),
+      where('userId', 'in', [uid, 'all']),
+      limit(60)
+    );
+    const unsubNotifs = onSnapshot(
+      notifsQuery,
+      (snap) => {
+        const localReadBroadcasts = getLocalReadBroadcastIds(uid);
+        const mapped = snap.docs
+          .map((d) => {
+            const data = d.data() as FirestoreNotificationDoc;
+            const created = formatFirestoreTimestamp(data.createdAt, 'Recent');
+            const isBroadcast = data.userId === 'all';
+            const effectiveRead = isBroadcast
+              ? Boolean(data.isRead ?? data.read) || localReadBroadcasts.has(data.id)
+              : Boolean(data.isRead ?? data.read);
+            return {
+              id: data.id,
+              notificationId: data.notificationId ?? data.id,
+              targetUserId: data.userId,
+              title: data.title,
+              message: data.message,
+              timeLabel: created.label,
+              read: effectiveRead,
+              isRead: effectiveRead,
+              category: data.type,
+              referenceId: data.referenceId,
+              _iso: created.iso,
+            };
+          })
+          .sort((a, b) => b._iso.localeCompare(a._iso))
+          .map(({ _iso: _unused, ...rest }) => rest);
+        setNotifications(mapped);
+      },
+      () => undefined
+    );
+
+    const ticketsQuery = query(
+      collection(firebaseServices.db, FIRESTORE_COLLECTIONS.supportTickets),
+      where('userId', '==', uid),
+      limit(50)
+    );
+    const unsubTickets = onSnapshot(
+      ticketsQuery,
+      (snap) => {
+        const mapped = snap.docs
+          .map((d) => {
+            const data = d.data() as FirestoreSupportTicketDoc;
+            const created = formatFirestoreTimestamp(data.createdAt, 'Synced');
+            const updated = formatFirestoreTimestamp(data.updatedAt, created.label);
+            return {
+              id: data.id,
+              ticketNumber: data.id.toUpperCase(),
+              category: data.category,
+              subject: data.subject as TicketSubject,
+              orderReference: data.orderReference,
+              attachmentUrl: data.attachmentUrl,
+              message: data.message,
+              adminReply: data.adminReply,
+              priority: data.priority as TicketPriority,
+              status: data.status,
+              createdAtLabel: created.label,
+              updatedAtLabel: updated.label,
+              _iso: updated.iso,
+            };
+          })
+          .sort((a, b) => b._iso.localeCompare(a._iso))
+          .map(({ _iso: _unused, ...rest }) => rest);
+        setTickets(mapped);
+      },
+      () => undefined
+    );
+
+    const paymentsQuery = query(
+      collection(firebaseServices.db, FIRESTORE_COLLECTIONS.payments),
+      where('userId', '==', uid),
+      limit(50)
+    );
+    const unsubPayments = onSnapshot(
+      paymentsQuery,
+      (snap) => {
+        const mapped = snap.docs
+          .map((d) => {
+            const data = d.data() as FirestorePaymentDoc;
+            const created = formatFirestoreTimestamp(data.createdAt, 'Pending');
+            const reviewed = data.reviewedAt
+              ? formatFirestoreTimestamp(data.reviewedAt, '')
+              : null;
+            return {
+              id: data.id,
+              paymentId: data.paymentId ?? data.id,
+              userId: data.userId,
+              userName: data.userName ?? '',
+              method: data.paymentMethod ?? data.method,
+              amount: Number(data.amount ?? 0),
+              transactionId: data.transactionId,
+              status: data.status,
+              adminNote: data.adminNote,
+              reviewedBy: data.reviewedBy,
+              reviewedAtLabel: reviewed?.label || undefined,
+              createdAtLabel: created.label,
+              _iso: created.iso,
+            };
+          })
+          .sort((a, b) => b._iso.localeCompare(a._iso))
+          .map(({ _iso: _unused, ...rest }) => rest);
+        setPaymentRequests(mapped);
+      },
+      () => undefined
+    );
+
+    return () => {
+      unsubUser();
+      unsubOrders();
+      unsubNotifs();
+      unsubTickets();
+      unsubPayments();
+    };
+  }, [firebaseUser]);
+
+  const registerWithEmail = useCallback(
+    async (input: RegisterInput): Promise<AuthActionResult> => {
+      try {
+        const created = await authService.registerWithEmail(input);
+        const brand = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
+        setProfile(toCustomerProfile(created));
+        setAccountStatus(created.status);
+        setUserRole(created.role);
+        setStaffRole(null);
+        setWallet({ balance: created.balance, totalSpent: 0, totalDeposited: 0 });
+        setActiveTab('home');
+        setViewModeState('dashboard');
+        showToast({
+          title: 'Account Created',
+          description: `Welcome to ${brand}, ${created.name}!`,
+          tone: 'success',
+        });
+        return { success: true };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Registration failed.',
+        };
+      }
+    },
+    [showToast, systemSettings?.websiteName]
+  );
+
+  const loginWithEmail = useCallback(
+    async (input: LoginInput): Promise<AuthActionResult> => {
+      try {
+        const signedInProfile = await authService.loginWithEmail(input);
+        const currentUser = getFirebaseServices()?.auth.currentUser;
+        const staffAccess = await adminService.verifyStaffAccess(
+          signedInProfile.uid,
+          signedInProfile.email,
+          Boolean(currentUser?.emailVerified)
+        );
+        const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
+          ? staffAccess.staffRole
+          : signedInProfile.role === 'admin'
+          ? 'admin'
+          : null;
+        const effectiveRole: UserRole =
+          signedInProfile.role === 'admin' || staffAccess.isStaff ? 'admin' : 'user';
+
+        setProfile(
+          toCustomerProfile({ ...signedInProfile, role: effectiveRole }, resolvedStaffRole)
+        );
+        setAccountStatus(signedInProfile.status);
+        setUserRole(effectiveRole);
+        setStaffRole(resolvedStaffRole);
+        setActiveTab('home');
+
+        if (signedInProfile.status !== 'active') {
+          setViewModeState('dashboard');
+          return { success: true };
+        }
+
+        setViewModeState(effectiveRole === 'admin' ? 'admin' : 'dashboard');
+        showToast({
+          title: 'Signed In',
+          description:
+            effectiveRole === 'admin'
+              ? `${getAdminRoleLabel(resolvedStaffRole)} access verified.`
+              : `Welcome back, ${signedInProfile.name}.`,
+          tone: 'success',
+        });
+        return { success: true };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Login failed.',
+        };
+      }
+    },
+    [showToast]
+  );
+
+  const loginWithGoogle = useCallback(async (): Promise<AuthActionResult> => {
+    try {
+      const signedInProfile = await authService.loginWithGoogle();
+      const currentUser = getFirebaseServices()?.auth.currentUser;
+      const staffAccess = await adminService.verifyStaffAccess(
+        signedInProfile.uid,
+        signedInProfile.email,
+        Boolean(currentUser?.emailVerified)
+      );
+      const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
+        ? staffAccess.staffRole
+        : signedInProfile.role === 'admin'
+        ? 'admin'
+        : null;
+      const effectiveRole: UserRole =
+        signedInProfile.role === 'admin' || staffAccess.isStaff ? 'admin' : 'user';
+
+      setProfile(
+        toCustomerProfile({ ...signedInProfile, role: effectiveRole }, resolvedStaffRole)
+      );
+      setAccountStatus(signedInProfile.status);
+      setUserRole(effectiveRole);
+      setStaffRole(resolvedStaffRole);
+      setActiveTab('home');
+      setViewModeState(effectiveRole === 'admin' ? 'admin' : 'dashboard');
+      showToast({
+        title: 'Signed In with Google',
+        description: `Welcome, ${signedInProfile.name}.`,
+        tone: 'success',
+      });
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Google sign-in failed.',
+      };
+    }
+  }, [showToast]);
+
+  const sendPasswordReset = useCallback(async (email: string): Promise<AuthActionResult> => {
+    try {
+      await authService.sendPasswordReset(email);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Could not send password reset link.',
+      };
+    }
+  }, []);
+
+  const updateUserProfile = useCallback(
+    async (input: UpdateProfileInput): Promise<AuthActionResult> => {
+      if (!firebaseUser) {
+        return { success: false, error: 'You must be signed in.' };
+      }
+      try {
+        const updated = await authService.updateOwnProfile(firebaseUser.uid, input);
+        setProfile(toCustomerProfile(updated));
+        showToast({
+          title: 'Profile Updated',
+          description: 'Your personal details have been saved.',
+          tone: 'success',
+        });
+        return { success: true };
+      } catch (error) {
+        const message = toUserFriendlyFirebaseError(error);
+        showToast({
+          title: 'Update Failed',
+          description: message,
+          tone: 'error',
+        });
+        return { success: false, error: message };
+      }
+    },
+    [firebaseUser, showToast]
+  );
+
+  const logoutUser = useCallback(async () => {
+    await authService.logout();
+    setFirebaseUser(null);
+    setProfile(null);
+    setUserRole('user');
+    setStaffRole(null);
+    setAccountStatus('active');
+    setViewModeState('login');
+    showToast({
+      title: 'Signed Out',
+      description: 'Your session has been closed securely.',
+      tone: 'info',
+    });
+  }, [showToast]);
+
+  const runDatabaseInitialization = useCallback(
+    async (options?: { seedDemo?: boolean }): Promise<DatabaseInitReport> => {
+      const report = await initializeDatabase(options);
+      setLastInitReport(report);
+      setSetupState(report.setupState);
+      if (report.success) {
+        showToast({
+          title: 'Database Initialized',
+          description: report.message,
+          tone: 'success',
+        });
+      } else {
+        showToast({
+          title: 'Initialization Failed',
+          description: report.message,
+          tone: 'error',
+        });
+      }
+      return report;
+    },
+    [showToast]
+  );
+
+  const signInAdminWithGoogle = useCallback(async (): Promise<boolean> => {
+    try {
+      const user = await signInWithGooglePopup();
+      setFirebaseUser(user);
+      const staffAccess = await adminService.verifyStaffAccess(
+        user.uid,
+        user.email,
+        user.emailVerified
+      );
+      setUserRole(staffAccess.isStaff ? 'admin' : 'user');
+      setStaffRole(staffAccess.staffRole);
+      await refreshSetupState();
+
+      if (!staffAccess.isStaff) {
+        showToast({
+          title: 'Access Restricted',
+          description: 'Signed-in account does not hold Staff/Admin privileges.',
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      showToast({
+        title: `${getAdminRoleLabel(staffAccess.staffRole)} Verified`,
+        description: `Signed in as ${user.email ?? 'Administrator'}.`,
+        tone: 'success',
+      });
+      return true;
+    } catch (error) {
+      showToast({
+        title: 'Sign-In Failed',
+        description: toUserFriendlyFirebaseError(error),
+        tone: 'error',
+      });
+      return false;
+    }
+  }, [refreshSetupState, showToast]);
+
+  const signOutAdmin = useCallback(async () => {
+    await signOutFirebase();
+    setFirebaseUser(null);
+    setProfile(null);
+    setUserRole('user');
+    setStaffRole(null);
+    setViewModeState('login');
+    showToast({
+      title: 'Signed Out',
+      description: 'Admin session closed securely.',
+      tone: 'info',
+    });
+  }, [showToast]);
+
+  const openAuthModal = useCallback((mode: 'login' | 'register') => {
+    setViewModeState(mode === 'register' ? 'register' : 'login');
+  }, []);
+
+  const closeAuthModal = useCallback(() => {
+    setAuthModalMode(null);
+  }, []);
+
+  const selectPlatformForOrder = useCallback(
+    (id: PlatformId) => {
+      if (!firebaseUser) {
+        setViewModeState('login');
+        return;
+      }
+      if (id === 'more') {
+        setActiveTab('services');
+        setViewModeState('dashboard');
+        return;
+      }
+      setSelectedPlatform(id);
+      setActiveTab('home');
+      setViewModeState('dashboard');
+      window.setTimeout(() => {
+        const el = document.getElementById('new-order-card');
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 60);
+    },
+    [firebaseUser]
+  );
+
+  const openOrderDetails = useCallback(
+    (orderId: string) => {
+      if (!firebaseUser) {
+        setViewModeState('login');
+        return;
+      }
+      setSelectedOrderId(orderId);
+      setActiveTab('order');
+      setViewModeState('dashboard');
+    },
+    [firebaseUser]
+  );
+
+  const placeDemoOrder = useCallback(
+    async (input: CreateOrderInput): Promise<boolean> => {
+      if (orderInFlightRef.current) {
+        return false;
+      }
+
+      if (!firebaseUser || accountStatus !== 'active') {
+        showToast({
+          title: 'Action unavailable',
+          description: 'Only active signed-in accounts can submit orders.',
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      const targetService = services.find((s) => s.id === input.serviceId);
+      if (!targetService) {
+        showToast({
+          title: 'Service unavailable',
+          description: 'Please pick a valid service from the dropdown.',
+          tone: 'error',
+        });
+        return false;
+      }
+
+      if (!input.link.trim()) {
+        showToast({
+          title: 'Target link required',
+          description: 'Enter a valid profile or post URL before placing the order.',
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      if (input.quantity < targetService.minQuantity || input.quantity > targetService.maxQuantity) {
+        showToast({
+          title: 'Invalid quantity range',
+          description: `Quantity must be between ${targetService.minQuantity.toLocaleString()} and ${targetService.maxQuantity.toLocaleString()}.`,
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      const sig = `${input.serviceId}::${input.link.trim().toLowerCase()}::${Math.floor(input.quantity)}`;
+      const now = Date.now();
+      if (lastOrderSigRef.current && lastOrderSigRef.current.sig === sig && now - lastOrderSigRef.current.at < 4000) {
+        showToast({
+          title: 'Duplicate Order Prevented',
+          description: 'Identical order was just submitted. Please wait a few seconds before repeating.',
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      const cost = Number(((input.quantity / 1000) * targetService.ratePerThousand).toFixed(2));
+      if (cost > wallet.balance) {
+        showToast({
+          title: 'Insufficient Balance',
+          description: 'আপনার পর্যাপ্ত ব্যালেন্স নেই। অনুগ্রহ করে Add Funds করে আবার চেষ্টা করুন।',
+          tone: 'warning',
+        });
+        return false;
+      }
+
+      const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+      const idempotencyKey =
+        input.idempotencyKey?.trim() ||
+        `${10258 + Math.floor(Math.random() * 89000)}-${now.toString().slice(-4)}`;
+
+      orderInFlightRef.current = true;
+      try {
+        const newOrder = await ordersService.placeDemoOrder(
+          { ...input, idempotencyKey },
+          targetService
+        );
+        lastOrderSigRef.current = { sig, at: Date.now() };
+        setOrders((prev) => [newOrder, ...prev.filter((o) => o.id !== newOrder.id)]);
+        setOrderStats((prev) => ({
+          ...prev,
+          totalOrders: prev.totalOrders + 1,
+          pendingOrders: prev.pendingOrders + 1,
+        }));
+        setWallet((prev) => ({
+          ...prev,
+          balance: Math.max(0, Number((prev.balance - newOrder.charge).toFixed(2))),
+          totalSpent: Number((prev.totalSpent + newOrder.charge).toFixed(2)),
+        }));
+        refreshWalletLedger().catch(() => undefined);
+        showToast({
+          title: `Order #${newOrder.orderNumber} Placed`,
+          description: `${currencySymbol}${newOrder.charge.toFixed(2)} deducted atomically for ${input.quantity.toLocaleString()} units.`,
+          tone: 'success',
+        });
+        return true;
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : toUserFriendlyFirebaseError(error);
+        showToast({
+          title: 'Order Failed',
+          description: msg,
+          tone: 'error',
+        });
+        return false;
+      } finally {
+        orderInFlightRef.current = false;
+      }
+    },
+    [
+      accountStatus,
+      firebaseUser,
+      refreshWalletLedger,
+      services,
+      showToast,
+      systemSettings?.currencySymbol,
+      wallet.balance,
+    ]
+  );
+
+  const addDemoFunds = useCallback(
+    (_amount: number, _method: string) => {
+      setActiveTab('funds');
+      setViewModeState('dashboard');
+    },
+    []
+  );
+
+  const submitPaymentRequest = useCallback(
+    async (input: {
+      paymentMethodId: string;
+      amount: number;
+      transactionId: string;
+    }): Promise<boolean> => {
+      if (!firebaseUser || accountStatus !== 'active') {
+        showToast({
+          title: 'Account Restricted',
+          description: 'Only active signed-in users can submit payment requests.',
+          tone: 'warning',
+        });
+        return false;
+      }
+      const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+      try {
+        const created = await walletService.submitPaymentRequest({
+          ...input,
+          userName: profile?.fullName || firebaseUser.displayName || 'Customer',
+        });
+        setPaymentRequests((prev) => [created, ...prev]);
+        showToast({
+          title: 'Payment Request Submitted',
+          description: `Request ${created.paymentId} (${currencySymbol}${created.amount.toFixed(
+            2
+          )}) is now pending admin verification.`,
+          tone: 'success',
+        });
+        return true;
+      } catch (error) {
+        showToast({
+          title: 'Submission Failed',
+          description: error instanceof Error ? error.message : toUserFriendlyFirebaseError(error),
+          tone: 'error',
+        });
+        return false;
+      }
+    },
+    [accountStatus, firebaseUser, profile?.fullName, showToast, systemSettings?.currencySymbol]
+  );
+
+  const cancelPaymentRequest = useCallback(
+    async (paymentId: string) => {
+      try {
+        await walletService.cancelMyPaymentRequest(paymentId);
+        setPaymentRequests((prev) =>
+          prev.map((p) => (p.id === paymentId ? { ...p, status: 'cancelled' } : p))
+        );
+        showToast({
+          title: 'Request Cancelled',
+          description: 'Your pending deposit request has been cancelled.',
+          tone: 'info',
+        });
+      } catch (error) {
+        showToast({
+          title: 'Cancel Failed',
+          description: error instanceof Error ? error.message : toUserFriendlyFirebaseError(error),
+          tone: 'error',
+        });
+      }
+    },
+    [showToast]
+  );
+
+  const submitDemoTicket = useCallback(
+    async (input: CreateTicketInput) => {
+      try {
+        const created = await supportService.createTicket(input);
+        setTickets((prev) => [created, ...prev.filter((t) => t.id !== created.id)]);
+        setSelectedTicketId(created.id);
+        showToast({
+          title: `Ticket ${created.ticketNumber} opened`,
+          description: 'Saved to your support queue.',
+          tone: 'success',
+        });
+      } catch (error) {
+        showToast({
+          title: 'Ticket Submission Failed',
+          description: toUserFriendlyFirebaseError(error),
+          tone: 'error',
+        });
+      }
+    },
+    [showToast]
+  );
+
+  const openTicketDetails = useCallback(
+    (ticketId: string) => {
+      if (!firebaseUser) {
+        setViewModeState('login');
+        return;
+      }
+      setSelectedTicketId(ticketId);
+      setActiveTab('support');
+      setViewModeState('dashboard');
+    },
+    [firebaseUser]
+  );
+
+  const openSupportForOrder = useCallback(
+    (orderNumber: string) => {
+      if (!firebaseUser) {
+        setViewModeState('login');
+        return;
+      }
+      setSelectedTicketId(null);
+      setTicketDraftOrderRef(orderNumber);
+      setActiveTab('support');
+      setViewModeState('dashboard');
+    },
+    [firebaseUser]
+  );
+
+  const markNotificationRead = useCallback(async (item: NotificationItem) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === item.id ? { ...n, read: true, isRead: true } : n))
+    );
+    await walletService.markNotificationRead(item);
+  }, []);
+
+  const markAllNotificationsRead = useCallback(async () => {
+    setNotifications((prev) => {
+      walletService.markAllNotificationsRead(prev).catch(() => undefined);
+      return prev.map((n) => ({ ...n, read: true, isRead: true }));
+    });
+  }, []);
+
+  const handleNotificationClick = useCallback(
+    async (item: NotificationItem) => {
+      if (!item.read) {
+        await markNotificationRead(item);
+      }
+
+      const cat = String(item.category || '').toLowerCase();
+      if (cat.startsWith('order') || (cat === 'refund' && item.referenceId)) {
+        if (item.referenceId) {
+          setSelectedOrderId(item.referenceId);
+        }
+        setActiveTab('order');
+        setViewModeState('dashboard');
+        return;
+      }
+      if (cat.startsWith('payment') || cat === 'wallet') {
+        setActiveTab('funds');
+        setViewModeState('dashboard');
+        return;
+      }
+      if (cat.startsWith('support')) {
+        if (item.referenceId) {
+          setSelectedTicketId(item.referenceId);
+        }
+        setActiveTab('support');
+        setViewModeState('dashboard');
+        return;
+      }
+
+      setActiveTab('notifications');
+      setViewModeState('dashboard');
+    },
+    [markNotificationRead]
+  );
+
+  return (
+    <AppContext.Provider
+      value={{
+        viewMode,
+        setViewMode,
+        navigateProtected,
+        activeTab,
+        setActiveTab,
+        authModalMode,
+        openAuthModal,
+        closeAuthModal,
+        selectedPlatform,
+        setSelectedPlatform,
+        selectPlatformForOrder,
+        selectedOrderId,
+        setSelectedOrderId,
+        openOrderDetails,
+        selectedTicketId,
+        setSelectedTicketId,
+        openTicketDetails,
+        ticketDraftOrderRef,
+        setTicketDraftOrderRef,
+        openSupportForOrder,
+        handleNotificationClick,
+        platforms,
+        services,
+        orders,
+        orderStats,
+        profile,
+        accountStatus,
+        wallet,
+        paymentMethods,
+        paymentRequests,
+        transactions,
+        notifications,
+        tickets,
+        systemSettings,
+        refreshSystemSettings,
+        refreshCustomerData,
+        refreshWalletLedger,
+        dataError,
+        isLoading,
+        toast,
+        dismissToast,
+        showToast,
+        placeDemoOrder,
+        addDemoFunds,
+        submitPaymentRequest,
+        cancelPaymentRequest,
+        submitDemoTicket,
+        markNotificationRead,
+        markAllNotificationsRead,
+        firebaseUser,
+        userRole,
+        staffRole,
+        adminPermissions,
+        authReady,
+        setupState,
+        setupWizardOpen,
+        openSetupWizard,
+        closeSetupWizard,
+        lastInitReport,
+        refreshSetupState,
+        runDatabaseInitialization,
+        signInAdminWithGoogle,
+        signOutAdmin,
+        registerWithEmail,
+        loginWithEmail,
+        loginWithGoogle,
+        sendPasswordReset,
+        updateUserProfile,
+        logoutUser,
+        gatewayLock,
+        refreshGatewayLock,
+      }}
+    >
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+export function useApp(): AppContextValue {
+  const ctx = useContext(AppContext);
+  if (!ctx) {
+    throw new Error('useApp must be used inside AppProvider');
+  }
+  return ctx;
+}
