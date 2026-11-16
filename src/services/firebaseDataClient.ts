@@ -18,6 +18,7 @@ import {
 import { getFirebaseServices } from '../lib/firebase/client';
 import {
   FIRESTORE_COLLECTIONS,
+  SETTINGS_DOC_IDS,
   type AdminNotificationTypeFirestore,
   type FirestoreAdminNotificationDoc,
   type FirestoreCategoryDoc,
@@ -26,6 +27,7 @@ import {
   type FirestorePaymentDoc,
   type FirestorePaymentMethodDoc,
   type FirestoreServiceDoc,
+  type FirestoreSettingsDoc,
   type FirestoreSupportTicketDoc,
   type FirestoreTicketReplyDoc,
   type FirestoreTransactionDoc,
@@ -55,11 +57,32 @@ import type {
 import { APP_CONFIG } from '../config/app.config';
 import { dataClient as demoClient, type IDataClient } from './dataClient';
 
+export interface PublicCatalogBundle {
+  platforms: PlatformCategory[];
+  services: SmmService[];
+  systemSettings: Partial<FirestoreSettingsDoc> | null;
+  paymentMethods: PaymentMethodItem[];
+}
+
+const PUBLIC_MEMORY_TTL_MS = 15_000;
+let memoryPublicBundle: PublicCatalogBundle | null = null;
+let memoryPublicBundleAt = 0;
+let inFlightPublicBundle: Promise<PublicCatalogBundle> | null = null;
+
+export function invalidatePublicCatalogCache(): void {
+  memoryPublicBundle = null;
+  memoryPublicBundleAt = 0;
+  inFlightPublicBundle = null;
+}
+
 async function getDynamicCurrencySymbol(): Promise<string> {
+  const cachedSymbol = memoryPublicBundle?.systemSettings?.currencySymbol?.trim();
+  if (cachedSymbol) return cachedSymbol;
+
   const services = getFirebaseServices();
   if (!services) return APP_CONFIG.currencySymbol;
   try {
-    const sysSnap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, 'system'));
+    const sysSnap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, SETTINGS_DOC_IDS.system));
     if (sysSnap.exists()) {
       const data = sysSnap.data() as { currencySymbol?: string };
       if (data.currencySymbol?.trim()) {
@@ -191,79 +214,84 @@ function emitAdminNotification(
 }
 
 /**
- * Firestore-backed DataClient implementing IDataClient.
- * Automatically scopes private reads (orders, transactions, notifications, tickets)
- * to the authenticated user's UID to satisfy Firestore Security Rules.
+ * Fetches settings, active categories, active services, and active payment methods
+ * in a single parallel batch with in-flight deduplication and short-lived memory caching.
  */
-async function shouldHideDemoCatalog(): Promise<boolean> {
-  const services = getFirebaseServices();
-  if (!services) return false;
-  try {
-    const sysSnap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, 'system'));
-    if (!sysSnap.exists()) return false;
-    const data = sysSnap.data() as { productionMode?: boolean; demoDataEnabled?: boolean };
-    return Boolean(data.productionMode && data.demoDataEnabled === false);
-  } catch {
-    return false;
-  }
-}
-
-export class FirestoreDataClient implements IDataClient {
-  async getPlatforms(): Promise<PlatformCategory[]> {
-    const services = getFirebaseServices();
-    if (!services) return demoClient.getPlatforms();
-
-    try {
-      const [snap, hideDemo] = await Promise.all([
-        getDocs(
-          query(collection(services.db, FIRESTORE_COLLECTIONS.categories), orderBy('sortOrder', 'asc'))
-        ),
-        shouldHideDemoCatalog(),
-      ]);
-      if (snap.empty) {
-        return hideDemo ? [] : demoClient.getPlatforms();
-      }
-
-      const docs = snap.docs
-        .map((d) => d.data() as FirestoreCategoryDoc)
-        .filter((data) => data.status === 'active' && (!hideDemo || !data.isDemo));
-
-      return docs.map((data) => ({
-        id: data.id as PlatformId,
-        name: data.name,
-        shortName: data.id === 'x' || data.name.toLowerCase().startsWith('x ') ? 'X' : data.name,
-        description: data.description ?? '',
-        accentColor: '#6D28D9',
-        bgTint: 'bg-violet-50',
-        serviceCount: 0,
-      }));
-    } catch {
-      return [];
+export async function fetchPublicCatalogBundle(options?: {
+  forceRefresh?: boolean;
+}): Promise<PublicCatalogBundle> {
+  const forceRefresh = Boolean(options?.forceRefresh);
+  if (!forceRefresh) {
+    if (memoryPublicBundle && Date.now() - memoryPublicBundleAt < PUBLIC_MEMORY_TTL_MS) {
+      return memoryPublicBundle;
+    }
+    if (inFlightPublicBundle) {
+      return inFlightPublicBundle;
     }
   }
 
-  async getServices(): Promise<SmmService[]> {
-    const services = getFirebaseServices();
-    if (!services) return demoClient.getServices();
+  const services = getFirebaseServices();
+  if (!services) {
+    const [demoPlatforms, demoServices] = await Promise.all([
+      demoClient.getPlatforms(),
+      demoClient.getServices(),
+    ]);
+    return {
+      platforms: demoPlatforms,
+      services: demoServices,
+      systemSettings: null,
+      paymentMethods: [],
+    };
+  }
 
-    try {
-      const [snap, catSnap, hideDemo] = await Promise.all([
-        getDocs(collection(services.db, FIRESTORE_COLLECTIONS.services)),
-        getDocs(collection(services.db, FIRESTORE_COLLECTIONS.categories)),
-        shouldHideDemoCatalog(),
-      ]);
-      if (snap.empty) {
-        return hideDemo ? [] : demoClient.getServices();
-      }
+  const loadPromise = (async (): Promise<PublicCatalogBundle> => {
+    const [sysSnap, catSnap, srvSnap, pmSnap] = await Promise.all([
+      getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, SETTINGS_DOC_IDS.system)).catch(
+        () => null
+      ),
+      getDocs(
+        query(collection(services.db, FIRESTORE_COLLECTIONS.categories), orderBy('sortOrder', 'asc'))
+      ).catch(() => null),
+      getDocs(collection(services.db, FIRESTORE_COLLECTIONS.services)).catch(() => null),
+      getDocs(
+        query(
+          collection(services.db, FIRESTORE_COLLECTIONS.paymentMethods),
+          where('status', '==', 'active')
+        )
+      ).catch(() => null),
+    ]);
 
-      const categoryStatusMap = new Map<string, string>();
-      catSnap.docs.forEach((d) => {
-        const cat = d.data() as FirestoreCategoryDoc;
-        categoryStatusMap.set(cat.id, cat.status);
-      });
+    const systemSettings: Partial<FirestoreSettingsDoc> | null =
+      sysSnap && sysSnap.exists() ? (sysSnap.data() as FirestoreSettingsDoc) : null;
+    const hideDemo = Boolean(
+      systemSettings?.productionMode && systemSettings?.demoDataEnabled === false
+    );
 
+    const categoryStatusMap = new Map<string, string>();
+    let platforms: PlatformCategory[] = [];
+
+    if (catSnap && !catSnap.empty) {
+      const catDocs = catSnap.docs.map((d) => d.data() as FirestoreCategoryDoc);
+      catDocs.forEach((cat) => categoryStatusMap.set(cat.id, cat.status));
+      platforms = catDocs
+        .filter((data) => data.status === 'active' && (!hideDemo || !data.isDemo))
+        .map((data) => ({
+          id: data.id as PlatformId,
+          name: data.name,
+          shortName: data.id === 'x' || data.name.toLowerCase().startsWith('x ') ? 'X' : data.name,
+          description: data.description ?? '',
+          accentColor: '#6D28D9',
+          bgTint: 'bg-violet-50',
+          serviceCount: 0,
+        }));
+    } else if (!hideDemo && catSnap && catSnap.empty) {
+      platforms = await demoClient.getPlatforms();
+    }
+
+    let parsedServices: SmmService[] = [];
+    if (srvSnap && !srvSnap.empty) {
       // Strictly omit providerId, providerServiceId, and costPrice from customer DTOs
-      return snap.docs
+      parsedServices = srvSnap.docs
         .map((d) => d.data() as FirestoreServiceDoc)
         .filter((s) => {
           if (s.status !== 'active') return false;
@@ -287,9 +315,58 @@ export class FirestoreDataClient implements IDataClient {
           refillGuaranteed: Boolean(s.refillGuaranteed),
           description: s.description ?? '',
         }));
-    } catch {
-      return [];
+    } else if (!hideDemo && srvSnap && srvSnap.empty) {
+      parsedServices = await demoClient.getServices();
     }
+
+    const paymentMethods: PaymentMethodItem[] = pmSnap
+      ? pmSnap.docs
+          .map((d) => {
+            const data = d.data() as FirestorePaymentMethodDoc;
+            return {
+              id: data.id,
+              name: data.name,
+              type: data.type,
+              accountNumber: data.accountNumber,
+              instructions: data.instructions,
+              note: data.note ?? '',
+              minAmount: Number(data.minAmount ?? 10),
+              maxAmount: Number(data.maxAmount ?? 100000),
+              status: data.status,
+              displayOrder: Number(data.displayOrder ?? 0),
+            };
+          })
+          .sort((a, b) => a.displayOrder - b.displayOrder)
+      : [];
+
+    const bundle: PublicCatalogBundle = {
+      platforms,
+      services: parsedServices,
+      systemSettings,
+      paymentMethods,
+    };
+    memoryPublicBundle = bundle;
+    memoryPublicBundleAt = Date.now();
+    return bundle;
+  })().finally(() => {
+    if (inFlightPublicBundle === loadPromise) {
+      inFlightPublicBundle = null;
+    }
+  });
+
+  inFlightPublicBundle = loadPromise;
+  return loadPromise;
+}
+
+export class FirestoreDataClient implements IDataClient {
+  async getPlatforms(): Promise<PlatformCategory[]> {
+    const bundle = await fetchPublicCatalogBundle();
+    return bundle.platforms;
+  }
+
+  async getServices(): Promise<SmmService[]> {
+    const bundle = await fetchPublicCatalogBundle();
+    return bundle.services;
   }
 
   async getOrders(pageSize = 100): Promise<OrderRecord[]> {
@@ -653,35 +730,9 @@ export class FirestoreDataClient implements IDataClient {
     }
   }
 
-  async getActivePaymentMethods(): Promise<PaymentMethodItem[]> {
-    const services = getFirebaseServices();
-    if (!services) return [];
-
-    try {
-      const q = query(
-        collection(services.db, FIRESTORE_COLLECTIONS.paymentMethods),
-        where('status', '==', 'active')
-      );
-      const snap = await getDocs(q);
-      const list = snap.docs.map((d) => {
-        const data = d.data() as FirestorePaymentMethodDoc;
-        return {
-          id: data.id,
-          name: data.name,
-          type: data.type,
-          accountNumber: data.accountNumber,
-          instructions: data.instructions,
-          note: data.note ?? '',
-          minAmount: Number(data.minAmount ?? 10),
-          maxAmount: Number(data.maxAmount ?? 100000),
-          status: data.status,
-          displayOrder: Number(data.displayOrder ?? 0),
-        };
-      });
-      return list.sort((a, b) => a.displayOrder - b.displayOrder);
-    } catch {
-      return [];
-    }
+  async getActivePaymentMethods(forceRefresh = false): Promise<PaymentMethodItem[]> {
+    const bundle = await fetchPublicCatalogBundle({ forceRefresh });
+    return bundle.paymentMethods;
   }
 
   async getMyPaymentRequests(): Promise<CustomerPaymentRequest[]> {

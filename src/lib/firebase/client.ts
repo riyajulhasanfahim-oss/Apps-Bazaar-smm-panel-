@@ -10,6 +10,9 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc,
   getDocFromServer,
   type Firestore,
@@ -26,9 +29,26 @@ export interface FirebaseServiceInstances {
 
 let cachedInstances: FirebaseServiceInstances | null = null;
 let cachedConfigKey = '';
+let connectionProbeStarted = false;
 
 function buildConfigKey(cfg: FirebaseRuntimeConfig): string {
   return `${cfg.projectId}::${cfg.appId}::${cfg.firestoreDatabaseId ?? 'default'}`;
+}
+
+function createPersistentFirestore(app: FirebaseApp, databaseId?: string): Firestore {
+  try {
+    return initializeFirestore(
+      app,
+      {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      },
+      databaseId
+    );
+  } catch {
+    return databaseId ? getFirestore(app, databaseId) : getFirestore(app);
+  }
 }
 
 /**
@@ -62,10 +82,7 @@ export function getFirebaseServices(): FirebaseServiceInstances | null {
           'rj-smm-primary'
         );
 
-    const db = config.firestoreDatabaseId
-      ? getFirestore(app, config.firestoreDatabaseId)
-      : getFirestore(app);
-
+    const db = createPersistentFirestore(app, config.firestoreDatabaseId);
     const auth = getAuth(app);
 
     cachedInstances = { app, auth, db, config };
@@ -89,6 +106,7 @@ export async function reinitializeFirebaseClient(): Promise<FirebaseServiceInsta
     }
     cachedInstances = null;
     cachedConfigKey = '';
+    connectionProbeStarted = false;
   }
   return getFirebaseServices();
 }
@@ -124,6 +142,15 @@ export async function testFirestoreConnection(): Promise<ConnectionCheckResult> 
       errorMessage: toUserFriendlyFirebaseError(error),
     };
   }
+}
+
+/**
+ * Runs a silent, non-blocking single connection probe once per session boot.
+ */
+export function probeFirestoreConnectionOnce(): void {
+  if (connectionProbeStarted) return;
+  connectionProbeStarted = true;
+  void testFirestoreConnection().catch(() => undefined);
 }
 
 export async function signInWithGooglePopup(): Promise<FirebaseAuthUser> {

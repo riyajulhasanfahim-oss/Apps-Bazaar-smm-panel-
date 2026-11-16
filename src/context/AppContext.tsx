@@ -8,8 +8,10 @@ import { walletService } from '../services/wallet.service';
 import { supportService } from '../services/support.service';
 import { adminService } from '../services/admin.service';
 import {
+  fetchPublicCatalogBundle,
   formatFirestoreTimestamp,
   getLocalReadBroadcastIds,
+  invalidatePublicCatalogCache,
   mapCustomerOrderDoc,
 } from '../services/firebaseDataClient';
 import {
@@ -21,10 +23,21 @@ import {
 } from '../services/auth.service';
 import {
   getFirebaseServices,
+  probeFirestoreConnectionOnce,
   signInWithGooglePopup,
   signOutFirebase,
   subscribeFirebaseAuth,
 } from '../lib/firebase/client';
+import {
+  clearUserStartupCache,
+  readLastActiveUid,
+  readPublicStartupCache,
+  readUserStartupCache,
+  warmBrandAndBannerAssets,
+  writeLastActiveUid,
+  writePublicStartupCache,
+  writeUserStartupCache,
+} from '../lib/cache/startupCache';
 import {
   initializeDatabase,
   inspectSetupState,
@@ -242,43 +255,81 @@ function clearAdminUrlFromBrowser(): void {
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
+  const initialBootRef = useRef<{
+    publicCache: ReturnType<typeof readPublicStartupCache>;
+    lastUid: string | null;
+    userCache: ReturnType<typeof readUserStartupCache>;
+  } | null>(null);
+
+  if (initialBootRef.current === null) {
+    const publicCache = readPublicStartupCache();
+    const lastUid = readLastActiveUid();
+    const userCache = lastUid ? readUserStartupCache(lastUid) : null;
+    initialBootRef.current = { publicCache, lastUid, userCache };
+    if (publicCache?.systemSettings) {
+      warmBrandAndBannerAssets(publicCache.systemSettings);
+    }
+  }
+
+  const bootPublic = initialBootRef.current.publicCache;
+  const bootUser = initialBootRef.current.userCache;
+  const hasWarmPublicCache = Boolean(
+    bootPublic && (bootPublic.platforms.length > 0 || bootPublic.systemSettings)
+  );
+
   const [viewMode, setViewModeState] = useState<AppViewMode>('dashboard');
   const [activeTab, setActiveTab] = useState<DashboardTab>('home');
   const [authModalMode, setAuthModalMode] = useState<AuthModalMode>(null);
-  const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>('instagram');
+  const [selectedPlatform, setSelectedPlatform] = useState<PlatformId>(
+    bootPublic?.selectedPlatform ?? bootPublic?.platforms[0]?.id ?? 'instagram'
+  );
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [ticketDraftOrderRef, setTicketDraftOrderRef] = useState<string>('');
   const [orderDraft, setOrderDraft] = useState<PendingOrderDraft | null>(null);
 
-  const [platforms, setPlatforms] = useState<PlatformCategory[]>([]);
-  const [services, setServices] = useState<SmmService[]>([]);
-  const [orders, setOrders] = useState<OrderRecord[]>([]);
-  const [orderStats, setOrderStats] = useState<OrderStatsSummary>({
-    totalOrders: 0,
-    completedOrders: 0,
-    pendingOrders: 0,
-  });
-  const [profile, setProfile] = useState<CustomerProfile | null>(null);
-  const [accountStatus, setAccountStatus] = useState<UserAccountStatus>('active');
-  const [wallet, setWallet] = useState<WalletSummary>({
-    balance: 0,
-    totalSpent: 0,
-    totalDeposited: 0,
-  });
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodItem[]>([]);
-  const [paymentRequests, setPaymentRequests] = useState<CustomerPaymentRequest[]>([]);
+  const [platforms, setPlatforms] = useState<PlatformCategory[]>(bootPublic?.platforms ?? []);
+  const [services, setServices] = useState<SmmService[]>(bootPublic?.services ?? []);
+  const [orders, setOrders] = useState<OrderRecord[]>(bootUser?.orders ?? []);
+  const [orderStats, setOrderStats] = useState<OrderStatsSummary>(
+    bootUser?.orderStats ?? {
+      totalOrders: 0,
+      completedOrders: 0,
+      pendingOrders: 0,
+    }
+  );
+  const [profile, setProfile] = useState<CustomerProfile | null>(bootUser?.profile ?? null);
+  const [accountStatus, setAccountStatus] = useState<UserAccountStatus>(
+    bootUser?.accountStatus ?? 'active'
+  );
+  const [wallet, setWallet] = useState<WalletSummary>(
+    bootUser?.wallet ?? {
+      balance: 0,
+      totalSpent: 0,
+      totalDeposited: 0,
+    }
+  );
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodItem[]>(
+    bootPublic?.paymentMethods ?? []
+  );
+  const [paymentRequests, setPaymentRequests] = useState<CustomerPaymentRequest[]>(
+    bootUser?.paymentRequests ?? []
+  );
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
-  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [tickets, setTickets] = useState<SupportTicket[]>([]);
-  const [systemSettings, setSystemSettings] = useState<Partial<FirestoreSettingsDoc> | null>(null);
+  const [notifications, setNotifications] = useState<NotificationItem[]>(
+    bootUser?.notifications ?? []
+  );
+  const [tickets, setTickets] = useState<SupportTicket[]>(bootUser?.tickets ?? []);
+  const [systemSettings, setSystemSettings] = useState<Partial<FirestoreSettingsDoc> | null>(
+    bootPublic?.systemSettings ?? null
+  );
   const [dataError, setDataError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(!hasWarmPublicCache);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const [firebaseUser, setFirebaseUser] = useState<FirebaseAuthUser | null>(null);
-  const [userRole, setUserRole] = useState<UserRole>('user');
-  const [staffRole, setStaffRole] = useState<AdminStaffRole | null>(null);
+  const [userRole, setUserRole] = useState<UserRole>(bootUser?.userRole ?? 'user');
+  const [staffRole, setStaffRole] = useState<AdminStaffRole | null>(bootUser?.staffRole ?? null);
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [setupWizardOpen, setSetupWizardOpen] = useState<boolean>(false);
   const [setupState, setSetupState] = useState<SetupState>({
@@ -438,9 +489,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshSystemSettings = useCallback(async () => {
-    const sys = await adminService.getSystemSettings();
+    invalidatePublicCatalogCache();
+    const sys = await adminService.getSystemSettings(true);
     setSystemSettings(sys);
-  }, []);
+    warmBrandAndBannerAssets(sys);
+    const currentCache = readPublicStartupCache();
+    writePublicStartupCache({
+      systemSettings: sys,
+      platforms: currentCache?.platforms ?? platforms,
+      services: currentCache?.services ?? services,
+      paymentMethods: currentCache?.paymentMethods ?? paymentMethods,
+      selectedPlatform: currentCache?.selectedPlatform,
+    });
+  }, [paymentMethods, platforms, services]);
 
   // Synchronize white-label document title, favicon & CSS accent theme variables
   useEffect(() => {
@@ -466,123 +527,93 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [systemSettings]);
 
-  const hydrateUserWorkspace = useCallback(async (authUser: FirebaseAuthUser | null): Promise<UserRole> => {
-    setDataError(null);
-    setIsLoading(true);
-    try {
-      const [loadedPlatforms, loadedServices, loadedSettings, loadedMethods] = await Promise.all([
-        catalogService.getPlatforms(),
-        catalogService.getAllServices(),
-        adminService.getSystemSettings(),
-        walletService.getActivePaymentMethods().catch(() => []),
-      ]);
-      setPlatforms(loadedPlatforms);
-      setServices(loadedServices);
-      setSystemSettings(loadedSettings);
-      setPaymentMethods(loadedMethods);
+  const applyPublicCatalogBundle = useCallback(
+    (bundle: {
+      platforms: PlatformCategory[];
+      services: SmmService[];
+      systemSettings: Partial<FirestoreSettingsDoc> | null;
+      paymentMethods: PaymentMethodItem[];
+    }) => {
+      setPlatforms(bundle.platforms);
+      setServices(bundle.services);
+      setSystemSettings(bundle.systemSettings);
+      setPaymentMethods(bundle.paymentMethods);
+      warmBrandAndBannerAssets(bundle.systemSettings);
 
-      if (loadedPlatforms.length > 0 && !loadedPlatforms.some((p) => p.id === selectedPlatform)) {
-        setSelectedPlatform(loadedPlatforms[0].id);
+      let resolvedPlatform: PlatformId | undefined;
+      if (bundle.platforms.length > 0) {
+        setSelectedPlatform((prev) => {
+          resolvedPlatform = bundle.platforms.some((p) => p.id === prev)
+            ? prev
+            : bundle.platforms[0].id;
+          return resolvedPlatform;
+        });
       }
 
-      if (!authUser) {
-        setProfile(null);
-        setAccountStatus('active');
-        setUserRole('user');
-        setStaffRole(null);
-        setOrders([]);
-        setOrderStats({ totalOrders: 0, completedOrders: 0, pendingOrders: 0 });
-        setWallet({ balance: 0, totalSpent: 0, totalDeposited: 0 });
-        setPaymentRequests([]);
-        setTransactions([]);
-        setNotifications([]);
-        setTickets([]);
+      writePublicStartupCache({
+        systemSettings: bundle.systemSettings,
+        platforms: bundle.platforms,
+        services: bundle.services,
+        paymentMethods: bundle.paymentMethods,
+        selectedPlatform: resolvedPlatform,
+      });
+    },
+    []
+  );
+
+  const resetSignedOutUserState = useCallback(() => {
+    setProfile(null);
+    setAccountStatus('active');
+    setUserRole('user');
+    setStaffRole(null);
+    setOrders([]);
+    setOrderStats({ totalOrders: 0, completedOrders: 0, pendingOrders: 0 });
+    setWallet({ balance: 0, totalSpent: 0, totalDeposited: 0 });
+    setPaymentRequests([]);
+    setTransactions([]);
+    setNotifications([]);
+    setTickets([]);
+  }, []);
+
+  const hydrateAuthenticatedAccount = useCallback(
+    async (authUser: FirebaseAuthUser): Promise<UserRole> => {
+      setDataError(null);
+      try {
+        const [authProfile, staffAccess] = await Promise.all([
+          authService.ensureAndFetchUserProfile(authUser),
+          adminService.verifyStaffAccess(authUser.uid, authUser.email, authUser.emailVerified),
+        ]);
+
+        const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
+          ? staffAccess.staffRole
+          : null;
+        const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
+
+        const mappedProfile = toCustomerProfile(
+          {
+            ...authProfile,
+            role: effectiveRole,
+          },
+          resolvedStaffRole
+        );
+
+        setProfile(mappedProfile);
+        setAccountStatus(authProfile.status);
+        setUserRole(effectiveRole);
+        setStaffRole(resolvedStaffRole);
+        setWallet((prev) => ({
+          ...prev,
+          balance: Number(authProfile.balance ?? 0),
+        }));
+
+        return effectiveRole;
+      } catch (error) {
+        setDataError(toUserFriendlyFirebaseError(error));
         return 'user';
       }
-
-      const [
-        authProfile,
-        staffAccess,
-        loadedOrders,
-        loadedTxns,
-        loadedPayRequests,
-        loadedNotifs,
-        loadedTickets,
-      ] = await Promise.all([
-        authService.ensureAndFetchUserProfile(authUser),
-        adminService.verifyStaffAccess(authUser.uid, authUser.email, authUser.emailVerified),
-        ordersService.getAll().catch(() => []),
-        walletService.getTransactions().catch(() => []),
-        walletService.getMyPaymentRequests().catch(() => []),
-        walletService.getNotifications().catch(() => []),
-        supportService.getTickets().catch(() => []),
-      ]);
-
-      const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
-        ? staffAccess.staffRole
-        : null;
-      const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
-
-      const mappedProfile = toCustomerProfile(
-        {
-          ...authProfile,
-          role: effectiveRole,
-        },
-        resolvedStaffRole
-      );
-
-      const totalDepositedFromLedger = loadedTxns
-        .filter(
-          (t) =>
-            t.type === 'deposit' ||
-            t.type === 'admin_credit' ||
-            (t.type === 'adjustment' && t.amount > 0)
-        )
-        .reduce((sum, t) => sum + Number(t.amount || 0), 0);
-
-      const totalSpentFromOrders = loadedOrders
-        .filter(
-          (o) =>
-            !o.refunded &&
-            o.status !== 'Canceled' &&
-            o.status !== 'Cancelled' &&
-            o.status !== 'Failed'
-        )
-        .reduce((sum, o) => sum + Number(o.charge ?? 0), 0);
-
-      setProfile(mappedProfile);
-      setAccountStatus(authProfile.status);
-      setUserRole(effectiveRole);
-      setStaffRole(resolvedStaffRole);
-      setOrders(loadedOrders);
-      setOrderStats({
-        totalOrders: loadedOrders.length,
-        completedOrders: loadedOrders.filter((o) => o.status === 'Completed').length,
-        pendingOrders: loadedOrders.filter(
-          (o) => o.status === 'Pending' || o.status === 'Processing' || o.status === 'In Progress'
-        ).length,
-      });
-      setWallet({
-        balance: Number(authProfile.balance ?? 0),
-        totalSpent: Number(totalSpentFromOrders.toFixed(2)),
-        totalDeposited: Number(totalDepositedFromLedger.toFixed(2)),
-      });
-      setPaymentRequests(loadedPayRequests);
-      setTransactions(loadedTxns);
-      setNotifications(loadedNotifs);
-      setTickets(loadedTickets);
-      return effectiveRole;
-    } catch (error) {
-      setDataError(toUserFriendlyFirebaseError(error));
-      return 'user';
-    } finally {
-      setIsLoading(false);
-    }
-  }, [selectedPlatform]);
-
-  const refreshCustomerData = useCallback(async () => {
-    await hydrateUserWorkspace(firebaseUser);
-  }, [firebaseUser, hydrateUserWorkspace]);
+    },
+    []
+  );
 
   const refreshWalletLedger = useCallback(async () => {
     if (!firebaseUser) return;
@@ -610,66 +641,163 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }));
   }, [firebaseUser]);
 
+  const refreshCustomerData = useCallback(async () => {
+    setDataError(null);
+    invalidatePublicCatalogCache();
+    try {
+      const bundle = await fetchPublicCatalogBundle({ forceRefresh: true });
+      applyPublicCatalogBundle(bundle);
+      if (firebaseUser) {
+        await Promise.all([
+          hydrateAuthenticatedAccount(firebaseUser),
+          refreshWalletLedger(),
+        ]);
+      }
+    } catch (error) {
+      setDataError(toUserFriendlyFirebaseError(error));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [applyPublicCatalogBundle, firebaseUser, hydrateAuthenticatedAccount, refreshWalletLedger]);
+
   useEffect(() => {
     let active = true;
 
-    // Immediately hydrate public homepage catalog & settings without blocking on auth
-    Promise.all([
-      catalogService.getPlatforms(),
-      catalogService.getAllServices(),
-      adminService.getSystemSettings(),
-      walletService.getActivePaymentMethods().catch(() => []),
-    ])
-      .then(([loadedPlatforms, loadedServices, loadedSettings, loadedMethods]) => {
+    // 1. Single deduplicated parallel public catalog & settings fetch (never re-fetched on auth state updates)
+    fetchPublicCatalogBundle()
+      .then((bundle) => {
         if (!active) return;
-        setPlatforms(loadedPlatforms);
-        setServices(loadedServices);
-        setSystemSettings(loadedSettings);
-        setPaymentMethods(loadedMethods);
-        if (loadedPlatforms.length > 0) {
-          setSelectedPlatform((prev) =>
-            loadedPlatforms.some((p) => p.id === prev) ? prev : loadedPlatforms[0].id
-          );
-        }
+        applyPublicCatalogBundle(bundle);
         setIsLoading(false);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!active) return;
+        setIsLoading(false);
+      });
 
-    refreshSetupState();
+    // 2. Non-blocking single server connectivity check on boot
+    probeFirestoreConnectionOnce();
 
+    // 3. Silent background Auth listener (relies on live onSnapshot listeners for orders/wallet/tickets/notifs)
     const unsubscribe = subscribeFirebaseAuth(async (user) => {
       if (!active) return;
       setFirebaseUser(user);
-      const effectiveRole = await hydrateUserWorkspace(user);
+
+      if (!user) {
+        writeLastActiveUid(null);
+        resetSignedOutUserState();
+        setAuthReady(true);
+        if (requestedAdminRouteRef.current) {
+          requestedAdminRouteRef.current = false;
+          clearAdminUrlFromBrowser();
+          setActiveTab('home');
+          setViewModeState('dashboard');
+        }
+        return;
+      }
+
+      writeLastActiveUid(user.uid);
+      if (initialBootRef.current?.lastUid !== user.uid) {
+        const switchedCache = readUserStartupCache(user.uid);
+        if (switchedCache) {
+          setProfile(switchedCache.profile);
+          setAccountStatus(switchedCache.accountStatus);
+          setUserRole(switchedCache.userRole);
+          setStaffRole(switchedCache.staffRole);
+          setWallet(switchedCache.wallet);
+          setOrderStats(switchedCache.orderStats);
+          setOrders(switchedCache.orders);
+          setNotifications(switchedCache.notifications);
+          setTickets(switchedCache.tickets);
+          setPaymentRequests(switchedCache.paymentRequests);
+        }
+      }
+
+      const effectiveRole = await hydrateAuthenticatedAccount(user);
       if (!active) return;
       setAuthReady(true);
 
-      if (user) {
-        const isVerifiedAdmin = effectiveRole === 'admin';
-        if (requestedAdminRouteRef.current) {
-          requestedAdminRouteRef.current = false;
-          if (isVerifiedAdmin) {
-            setViewModeState('admin');
-          } else {
-            clearAdminUrlFromBrowser();
-            setActiveTab('home');
-            setViewModeState('dashboard');
-          }
-        }
-        refreshSetupState();
-      } else if (requestedAdminRouteRef.current) {
+      if (requestedAdminRouteRef.current) {
         requestedAdminRouteRef.current = false;
-        clearAdminUrlFromBrowser();
-        setActiveTab('home');
-        setViewModeState('dashboard');
+        if (effectiveRole === 'admin') {
+          setViewModeState('admin');
+        } else {
+          clearAdminUrlFromBrowser();
+          setActiveTab('home');
+          setViewModeState('dashboard');
+        }
       }
+
+      // Lazy non-blocking background fetch for wallet ledger transactions
+      walletService
+        .getTransactions()
+        .then((loadedTxns) => {
+          if (!active) return;
+          setTransactions(loadedTxns);
+          const totalDepositedFromLedger = loadedTxns
+            .filter(
+              (t) =>
+                t.type === 'deposit' ||
+                t.type === 'admin_credit' ||
+                (t.type === 'adjustment' && t.amount > 0)
+            )
+            .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+          setWallet((prev) => ({
+            ...prev,
+            totalDeposited: Number(totalDepositedFromLedger.toFixed(2)),
+          }));
+        })
+        .catch(() => undefined);
     });
 
     return () => {
       active = false;
       unsubscribe();
     };
-  }, [hydrateUserWorkspace, refreshSetupState]);
+  }, [applyPublicCatalogBundle, hydrateAuthenticatedAccount, resetSignedOutUserState]);
+
+  // Only inspect setup diagnostics when actually entering Admin Panel
+  useEffect(() => {
+    if (viewMode === 'admin' && firebaseUser && userRole === 'admin') {
+      void refreshSetupState();
+    }
+  }, [firebaseUser, refreshSetupState, userRole, viewMode]);
+
+  // Refresh wallet transactions when navigating to Funds tab
+  useEffect(() => {
+    if (activeTab === 'funds' && firebaseUser) {
+      void refreshWalletLedger();
+    }
+  }, [activeTab, firebaseUser, refreshWalletLedger]);
+
+  // Persist signed-in user's snapshot for instant zero-skeleton reload hydration
+  useEffect(() => {
+    if (!firebaseUser?.uid || !profile) return;
+    writeUserStartupCache(firebaseUser.uid, {
+      profile,
+      accountStatus,
+      userRole,
+      staffRole,
+      wallet,
+      orderStats,
+      orders,
+      notifications,
+      tickets,
+      paymentRequests,
+    });
+  }, [
+    accountStatus,
+    firebaseUser?.uid,
+    notifications,
+    orderStats,
+    orders,
+    paymentRequests,
+    profile,
+    staffRole,
+    tickets,
+    userRole,
+    wallet,
+  ]);
 
   // Protect admin URL route against manual navigation by unauthorized or signed-out users
   useEffect(() => {
@@ -1073,15 +1201,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logoutUser = useCallback(async () => {
+    const prevUid = firebaseUser?.uid;
     await authService.logout();
+    writeLastActiveUid(null);
+    if (prevUid) clearUserStartupCache(prevUid);
     pendingRedirectRef.current = null;
     clearAdminUrlFromBrowser();
     setOrderDraft(null);
     setFirebaseUser(null);
-    setProfile(null);
-    setUserRole('user');
-    setStaffRole(null);
-    setAccountStatus('active');
+    resetSignedOutUserState();
     setActiveTab('home');
     setViewModeState('dashboard');
     showToast({
@@ -1089,7 +1217,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       description: 'Your session has been closed securely.',
       tone: 'info',
     });
-  }, [showToast]);
+  }, [firebaseUser?.uid, resetSignedOutUserState, showToast]);
 
   const runDatabaseInitialization = useCallback(
     async (options?: { seedDemo?: boolean }): Promise<DatabaseInitReport> => {
@@ -1153,13 +1281,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [refreshSetupState, showToast]);
 
   const signOutAdmin = useCallback(async () => {
+    const prevUid = firebaseUser?.uid;
     await signOutFirebase();
+    writeLastActiveUid(null);
+    if (prevUid) clearUserStartupCache(prevUid);
     pendingRedirectRef.current = null;
     clearAdminUrlFromBrowser();
     setFirebaseUser(null);
-    setProfile(null);
-    setUserRole('user');
-    setStaffRole(null);
+    resetSignedOutUserState();
     setActiveTab('home');
     setViewModeState('dashboard');
     showToast({
@@ -1167,7 +1296,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       description: 'Admin session closed securely.',
       tone: 'info',
     });
-  }, [showToast]);
+  }, [firebaseUser?.uid, resetSignedOutUserState, showToast]);
 
   const openAuthModal = useCallback((mode: 'login' | 'register') => {
     setViewModeState(mode === 'register' ? 'register' : 'login');

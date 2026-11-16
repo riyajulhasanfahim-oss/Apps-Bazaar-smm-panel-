@@ -7,6 +7,10 @@ import {
   type FirestoreSettingsDoc,
 } from '../lib/firestore/collections';
 import { OperationType, handleFirestoreError } from '../lib/firestore/errors';
+import {
+  fetchPublicCatalogBundle,
+  invalidatePublicCatalogCache,
+} from './firebaseDataClient';
 
 const DESIGNATED_ADMIN_EMAIL = 'riyajulhasanfahim@gmail.com';
 
@@ -100,9 +104,18 @@ export const adminService = {
   },
 
   /**
-   * Fetches public/system settings document from Firestore.
+   * Fetches public/system settings document from Firestore (deduplicated via PublicCatalogBundle).
    */
-  async getSystemSettings(): Promise<Partial<FirestoreSettingsDoc> | null> {
+  async getSystemSettings(forceRefresh = false): Promise<Partial<FirestoreSettingsDoc> | null> {
+    if (!forceRefresh) {
+      try {
+        const bundle = await fetchPublicCatalogBundle();
+        return bundle.systemSettings;
+      } catch {
+        return null;
+      }
+    }
+
     const services = getFirebaseServices();
     if (!services) return null;
 
@@ -143,6 +156,7 @@ export const adminService = {
         },
         { merge: true }
       );
+      invalidatePublicCatalogCache();
     } catch (error) {
       handleFirestoreError(
         error,

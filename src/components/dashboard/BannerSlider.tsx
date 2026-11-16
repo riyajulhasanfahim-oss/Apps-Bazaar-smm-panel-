@@ -123,6 +123,8 @@ export function BannerSlider() {
                       src={url}
                       alt={`${brandName} banner ${idx + 1}`}
                       loading={idx === 0 ? 'eager' : 'lazy'}
+                      decoding="async"
+                      fetchPriority={idx === 0 ? 'high' : 'auto'}
                       onError={() =>
                         setBrokenUrls((prev) => ({ ...prev, [url]: true }))
                       }

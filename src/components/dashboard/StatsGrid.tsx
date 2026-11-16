@@ -5,10 +5,10 @@ import { useApp } from '../../context/AppContext';
 import { StatCard } from '../common/StatCard';
 
 export function StatsGrid() {
-  const { wallet, orderStats, navigateProtected, isLoading, systemSettings } = useApp();
+  const { wallet, orderStats, navigateProtected, isLoading, platforms, systemSettings } = useApp();
   const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
 
-  if (isLoading) {
+  if (isLoading && platforms.length === 0) {
     return (
       <section aria-label="Loading statistics" className="grid grid-cols-1 gap-2.5 lg:grid-cols-12">
         <div className="lg:col-span-5 h-16 rounded-2xl bg-violet-200/50 animate-pulse" />

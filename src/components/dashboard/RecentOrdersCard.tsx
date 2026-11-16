@@ -29,7 +29,7 @@ export function RecentOrdersCard() {
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-xs">
-        {isLoading ? (
+        {isLoading && orders.length === 0 ? (
           <div className="space-y-2 p-4">
             <div className="h-11 rounded-xl bg-slate-100 animate-pulse" />
             <div className="h-11 rounded-xl bg-slate-100 animate-pulse" />
