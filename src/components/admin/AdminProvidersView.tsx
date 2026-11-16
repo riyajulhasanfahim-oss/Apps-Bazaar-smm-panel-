@@ -27,7 +27,7 @@ import {
 } from '../../services/adminPanel.service';
 import {
   getProviderAdapter,
-  suggestPlatformAndTypeFromImported,
+  resolveCategoryForImportedService,
   type ProviderServiceDTO,
 } from '../../services/providerAdapter';
 import { SERVICE_TYPE_OPTIONS, type ServiceType } from '../../types/service.types';
@@ -74,6 +74,8 @@ export function AdminProvidersView() {
   const [importedList, setImportedList] = useState<ProviderServiceDTO[]>([]);
   const [importSearch, setImportSearch] = useState('');
   const [importCategoryFilter, setImportCategoryFilter] = useState('all');
+  const [profitPerThousandInput, setProfitPerThousandInput] = useState('');
+  const [bulkImporting, setBulkImporting] = useState(false);
 
   // Review-before-publish form for a single selected imported service
   const [reviewItem, setReviewItem] = useState<ProviderServiceDTO | null>(null);
@@ -203,14 +205,26 @@ export function AdminProvidersView() {
     e.preventDefault();
     setSaving(true);
     try {
-      await adminPanelService.saveApiProvider({
+      const savedProvId = await adminPanelService.saveApiProvider({
         id: editing?.id,
         name,
         apiUrl,
         apiKey,
         providerFormat,
+        ...(modalTestResult?.ok && typeof modalTestResult.balance === 'number'
+          ? {
+              lastBalance: modalTestResult.balance,
+              lastBalanceCurrency: modalTestResult.currency ?? 'USD',
+            }
+          : {}),
         status,
       });
+      if (modalTestResult?.ok) {
+        setConnectionResults((prev) => ({
+          ...prev,
+          [savedProvId]: modalTestResult,
+        }));
+      }
       showToast({
         title: editing ? 'Provider Updated' : 'Provider Added',
         description: `${name} configuration stored securely in Firestore.`,
@@ -352,6 +366,8 @@ export function AdminProvidersView() {
     setImportedList([]);
     setImportSearch('');
     setImportCategoryFilter('all');
+    setProfitPerThousandInput('');
+    setBulkImporting(false);
     setReviewItem(null);
 
     try {
@@ -369,29 +385,116 @@ export function AdminProvidersView() {
     }
   };
 
+  const parsedProfitInput = useMemo(() => {
+    const trimmed = profitPerThousandInput.trim();
+    if (!trimmed) return null;
+    const val = Number(trimmed);
+    if (!Number.isFinite(val) || val < 0) return null;
+    return val;
+  }, [profitPerThousandInput]);
+
+  const newImportableCount = useMemo(
+    () =>
+      importedList.filter((item) => !mappedServiceKeysForImport.has(item.providerServiceId)).length,
+    [importedList, mappedServiceKeysForImport]
+  );
+
+  const handleImportAllServices = async () => {
+    if (!importProvider || importedList.length === 0 || bulkImporting) return;
+
+    const trimmedProfit = profitPerThousandInput.trim();
+    if (!trimmedProfit) {
+      showToast({
+        title: 'Enter Profit Amount',
+        description: 'Please enter your desired profit amount in BDT per 1,000 units before importing.',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    const profit = Number(trimmedProfit);
+    if (!Number.isFinite(profit) || profit < 0) {
+      showToast({
+        title: 'Invalid Profit Amount',
+        description: 'Profit per 1,000 units must be 0 or a positive BDT amount.',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    if (categories.length === 0) {
+      showToast({
+        title: 'No Categories Found',
+        description: 'Please make sure at least one category exists before importing services.',
+        tone: 'error',
+      });
+      return;
+    }
+
+    setBulkImporting(true);
+    try {
+      const result = await adminPanelService.bulkImportProviderServices({
+        providerId: importProvider.id,
+        items: importedList,
+        profitPerThousand: profit,
+        categories,
+        status: 'active',
+      });
+
+      const catSummary = Object.entries(result.categoryCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([cat, count]) => `${cat} (${count})`)
+        .join(', ');
+
+      if (result.importedCount > 0) {
+        showToast({
+          title: `Imported ${result.importedCount} Services`,
+          description: `Profit +${currencySymbol}${profit.toFixed(2)}/1K applied.${
+            catSummary ? ` Categorized into: ${catSummary}.` : ''
+          }${
+            result.skippedDuplicateCount > 0
+              ? ` Skipped ${result.skippedDuplicateCount} duplicate(s).`
+              : ''
+          }`,
+          tone: 'success',
+        });
+      } else {
+        showToast({
+          title: 'No New Services Imported',
+          description:
+            result.skippedDuplicateCount > 0
+              ? `All ${result.skippedDuplicateCount} service(s) from ${importProvider.name} are already imported.`
+              : 'No importable services were returned by this provider.',
+          tone: 'info',
+        });
+      }
+
+      await Promise.all([loadData(), refreshCustomerData().catch(() => undefined)]);
+    } catch (err) {
+      showToast({
+        title: 'Bulk Import Failed',
+        description: err instanceof Error ? err.message : 'Unable to import provider services.',
+        tone: 'error',
+      });
+    } finally {
+      setBulkImporting(false);
+    }
+  };
+
   const openReviewForImported = (item: ProviderServiceDTO) => {
-    const defaultCat = categories[0]?.id ?? 'instagram';
-    const suggested = suggestPlatformAndTypeFromImported(item.name, item.category, defaultCat);
-    const matchingCategory =
-      categories.find((c) => {
-        if (c.id === suggested.categoryId) return true;
-        if (suggested.categoryId === 'linkedin') {
-          return c.id.toLowerCase().includes('linkedin') || c.name.toLowerCase().includes('linkedin');
-        }
-        if (suggested.categoryId === 'webtraffic') {
-          const cid = c.id.toLowerCase();
-          const cname = c.name.toLowerCase();
-          return cid.includes('traffic') || cname.includes('traffic');
-        }
-        return false;
-      })?.id ?? defaultCat;
+    const resolved = resolveCategoryForImportedService(item.name, item.category, categories);
+    const matchingCategory = resolved.categoryId || (categories[0]?.id ?? 'instagram');
 
     const cost = Number(item.rate || 0);
-    const suggestedSell = Number((cost * 1.35).toFixed(2));
+    const suggestedSell =
+      parsedProfitInput !== null
+        ? Number((cost + parsedProfitInput).toFixed(2))
+        : Number(cost.toFixed(2));
 
     setReviewItem(item);
     setRvCategoryId(matchingCategory);
-    setRvServiceType(suggested.serviceType);
+    setRvServiceType(resolved.serviceType);
     setRvName(item.name.slice(0, 155));
     setRvDescription(item.description || `${item.category} (${item.type})`);
     setRvCostPrice(cost.toFixed(2));
@@ -635,14 +738,16 @@ export function AdminProvidersView() {
                     )}
                     <span>Test Connection</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => openImportDrawer(prov)}
-                    className="inline-flex h-8 items-center gap-1 rounded-lg bg-violet-700 px-2.5 text-xs font-semibold text-white hover:bg-violet-800"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    <span>Import Services</span>
-                  </button>
+                  {(connResult ? connResult.ok : typeof prov.lastBalance === 'number' || mappedCount > 0) && (
+                    <button
+                      type="button"
+                      onClick={() => openImportDrawer(prov)}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg bg-violet-700 px-2.5 text-xs font-semibold text-white hover:bg-violet-800"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Import Services</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => openEdit(prov)}
@@ -818,7 +923,7 @@ export function AdminProvidersView() {
                   Import Services from {importProvider.name}
                 </h2>
                 <p className="text-[11px] sm:text-xs text-slate-500">
-                  Review each imported item, configure customer name, category, and selling price before saving. Zero auto-publish.
+                  Set your BDT profit per 1,000 units to auto-calculate customer prices and auto-categorize services, or review individually.
                 </p>
               </div>
               <button
@@ -1050,6 +1155,73 @@ export function AdminProvidersView() {
               </form>
             ) : (
               <div className="flex flex-1 flex-col overflow-hidden p-5 space-y-3">
+                {!importLoading && !importError && importedList.length > 0 && (
+                  <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-3.5 space-y-2.5">
+                    <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end sm:justify-between">
+                      <div className="flex-1">
+                        <label
+                          htmlFor="import-profit-input"
+                          className="block text-xs font-bold text-violet-950 mb-1"
+                        >
+                          Desired Profit ({currencyCode} per 1,000 units)
+                        </label>
+                        <div className="relative">
+                          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500">
+                            {currencySymbol}
+                          </span>
+                          <input
+                            id="import-profit-input"
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={profitPerThousandInput}
+                            onChange={(e) => setProfitPerThousandInput(e.target.value)}
+                            placeholder="Enter profit per 1,000 (e.g. 10)"
+                            className="h-10 w-full rounded-xl border border-violet-200 bg-white pl-7 pr-3 text-xs sm:text-sm font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                          />
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={bulkImporting || newImportableCount === 0}
+                        onClick={handleImportAllServices}
+                        className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-60 shrink-0"
+                      >
+                        {bulkImporting ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" />
+                        )}
+                        <span>
+                          {bulkImporting
+                            ? 'Importing Services...'
+                            : `Import All Services${
+                                newImportableCount > 0 ? ` (${newImportableCount})` : ''
+                              }`}
+                        </span>
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-violet-900">
+                      <span>
+                        Formula:{' '}
+                        <span className="font-semibold">
+                          Customer Price = Provider Cost + Profit
+                        </span>
+                        {parsedProfitInput !== null && (
+                          <span className="ml-1.5 text-emerald-700 font-semibold">
+                            (e.g. {currencySymbol}50 + {currencySymbol}
+                            {parsedProfitInput.toFixed(2)} = {currencySymbol}
+                            {(50 + parsedProfitInput).toFixed(2)} / 1K)
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-slate-600 font-medium">
+                        {newImportableCount} new · {importedList.length - newImportableCount} already imported
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid gap-2.5 sm:grid-cols-12">
                   <div className="relative sm:col-span-7">
                     <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
@@ -1100,6 +1272,15 @@ export function AdminProvidersView() {
                   <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-200/80 divide-y divide-slate-100">
                     {filteredImported.slice(0, 150).map((item) => {
                       const alreadyMapped = mappedServiceKeysForImport.has(item.providerServiceId);
+                      const autoMatch = resolveCategoryForImportedService(
+                        item.name,
+                        item.category,
+                        categories
+                      );
+                      const customerRate =
+                        parsedProfitInput !== null
+                          ? Number((Number(item.rate || 0) + parsedProfitInput).toFixed(2))
+                          : null;
                       return (
                         <div
                           key={item.providerServiceId}
@@ -1113,6 +1294,9 @@ export function AdminProvidersView() {
                               <span className="text-[11px] font-semibold text-violet-700">
                                 {item.category}
                               </span>
+                              <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
+                                Auto: {autoMatch.categoryName}
+                              </span>
                               {item.refill && (
                                 <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                                   Refill
@@ -1120,7 +1304,7 @@ export function AdminProvidersView() {
                               )}
                               {alreadyMapped && (
                                 <span className="rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
-                                  Already Mapped
+                                  Already Imported
                                 </span>
                               )}
                             </div>
@@ -1128,8 +1312,21 @@ export function AdminProvidersView() {
                               {item.name}
                             </p>
                             <p className="text-[11px] text-slate-500 tabular-nums">
-                              Provider Rate: <span className="font-semibold">{item.rate}/1K</span> ·
-                              Min {item.min.toLocaleString()} – Max {item.max.toLocaleString()}
+                              Provider Cost:{' '}
+                              <span className="font-semibold">
+                                {currencySymbol}
+                                {Number(item.rate || 0).toFixed(2)}/1K
+                              </span>
+                              {customerRate !== null && (
+                                <>
+                                  {' · '}Customer Price:{' '}
+                                  <span className="font-bold text-emerald-700">
+                                    {currencySymbol}
+                                    {customerRate.toFixed(2)}/1K
+                                  </span>
+                                </>
+                              )}
+                              {' · '}Min {item.min.toLocaleString()} – Max {item.max.toLocaleString()}
                             </p>
                           </div>
 
@@ -1143,7 +1340,7 @@ export function AdminProvidersView() {
                                 : 'bg-violet-700 text-white hover:bg-violet-800'
                             }`}
                           >
-                            {alreadyMapped ? 'Mapped' : 'Review & Configure'}
+                            {alreadyMapped ? 'Imported' : 'Review & Configure'}
                           </button>
                         </div>
                       );

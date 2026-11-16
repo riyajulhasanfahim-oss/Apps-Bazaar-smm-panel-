@@ -219,6 +219,7 @@ export function getProviderAdapter(format: string = 'standard_v2'): IProviderAda
 
 /**
  * Helper to suggest a local platform category ID & ServiceType from an imported provider service row.
+ * Uses word-boundary checks to avoid false substring matches (e.g. "10x" or "max" matching X).
  */
 export function suggestPlatformAndTypeFromImported(
   serviceName: string,
@@ -228,30 +229,144 @@ export function suggestPlatformAndTypeFromImported(
   const combined = `${providerCategory} ${serviceName}`.toLowerCase();
 
   let categoryId: PlatformId = (fallbackCategoryId || 'more') as PlatformId;
-  if (combined.includes('instagram') || combined.includes('ig ')) categoryId = 'instagram';
-  else if (combined.includes('youtube') || combined.includes('yt ')) categoryId = 'youtube';
-  else if (combined.includes('facebook') || combined.includes('fb ')) categoryId = 'facebook';
-  else if (combined.includes('tiktok')) categoryId = 'tiktok';
-  else if (combined.includes('telegram') || combined.includes('tg ')) categoryId = 'telegram';
-  else if (combined.includes('twitter') || combined.includes('x ')) categoryId = 'x';
-  else if (combined.includes('linkedin')) categoryId = 'linkedin';
-  else if (
-    combined.includes('web traffic') ||
-    combined.includes('website traffic') ||
-    combined.includes('webtraffic') ||
-    combined.includes('traffic')
-  )
+  if (/\b(instagram|insta|igtv|reels)\b|\big\b/i.test(combined)) {
+    categoryId = 'instagram';
+  } else if (/\b(youtube|yt\s*shorts|youtube\s*shorts)\b|\byt\b/i.test(combined)) {
+    categoryId = 'youtube';
+  } else if (/\b(facebook|fb\s*page|fb\s*post|fb\s*reels)\b|\bfb\b/i.test(combined)) {
+    categoryId = 'facebook';
+  } else if (/\b(tiktok|tik\s*tok)\b/i.test(combined)) {
+    categoryId = 'tiktok';
+  } else if (/\b(telegram)\b|\btg\b/i.test(combined)) {
+    categoryId = 'telegram';
+  } else if (
+    /\b(twitter|tweet|tweets|retweet|retweets|x\.com)\b/i.test(combined) ||
+    /(?:^|[\s|/(\[])twitter\s*\/\s*x(?:$|[\s|/)\]])/i.test(combined) ||
+    /(?:^|[\s|/(\[])x\s*(?:\(twitter\)|\/\s*twitter)(?:$|[\s|/)\]])/i.test(combined) ||
+    (/(?:^|[\s|/:\[(])x(?:$|[\s|/:\])])/.test(combined) &&
+      /\b(follower|followers|like|likes|view|views|repost|comment|impression|profile|post|retweet)\b/i.test(
+        combined
+      ))
+  ) {
+    categoryId = 'x';
+  } else if (/\b(linkedin|linked\s*in)\b/i.test(combined)) {
+    categoryId = 'linkedin';
+  } else if (
+    /\b(web\s*traffic|website\s*traffic|webtraffic|site\s*traffic|organic\s*traffic|google\s*traffic|seo\s*traffic|traffic)\b/i.test(
+      combined
+    )
+  ) {
     categoryId = 'webtraffic';
+  }
 
   let serviceType: ServiceType = 'Other';
-  if (combined.includes('follower')) serviceType = 'Followers';
-  else if (combined.includes('subscriber')) serviceType = 'Subscribers';
-  else if (combined.includes('member')) serviceType = 'Members';
-  else if (combined.includes('like') || combined.includes('reaction')) serviceType = 'Likes';
-  else if (combined.includes('view') || combined.includes('watch')) serviceType = 'Views';
-  else if (combined.includes('comment')) serviceType = 'Comments';
-  else if (combined.includes('share') || combined.includes('repost') || combined.includes('retweet'))
+  if (/\b(follower|followers)\b/i.test(combined)) serviceType = 'Followers';
+  else if (/\b(subscriber|subscribers|sub)\b/i.test(combined)) serviceType = 'Subscribers';
+  else if (/\b(member|members)\b/i.test(combined)) serviceType = 'Members';
+  else if (/\b(like|likes|reaction|reactions)\b/i.test(combined)) serviceType = 'Likes';
+  else if (/\b(view|views|watch\s*time|watchtime|impression|impressions)\b/i.test(combined))
+    serviceType = 'Views';
+  else if (/\b(comment|comments)\b/i.test(combined)) serviceType = 'Comments';
+  else if (/\b(share|shares|repost|reposts|retweet|retweets)\b/i.test(combined))
     serviceType = 'Shares';
 
   return { categoryId, serviceType };
+}
+
+const PLATFORM_ALIASES: Record<string, string[]> = {
+  facebook: ['facebook', 'fb'],
+  instagram: ['instagram', 'insta', 'ig'],
+  youtube: ['youtube', 'yt'],
+  tiktok: ['tiktok', 'tik tok'],
+  telegram: ['telegram', 'tg'],
+  x: ['x', 'twitter', 'x (twitter)', 'twitter / x'],
+  linkedin: ['linkedin', 'linked in'],
+  webtraffic: ['webtraffic', 'web-traffic', 'web traffic', 'website traffic', 'traffic'],
+};
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function resolveCategoryForImportedService<
+  TCat extends { id: string; name: string },
+>(
+  serviceName: string,
+  providerCategory: string,
+  existingCategories: TCat[]
+): { categoryId: string; categoryName: string; serviceType: ServiceType } {
+  const defaultCat =
+    existingCategories.find((c) => ['other', 'general', 'more'].includes(c.id.toLowerCase())) ??
+    existingCategories[0];
+  const fallbackId = defaultCat?.id ?? '';
+  const suggested = suggestPlatformAndTypeFromImported(
+    serviceName,
+    providerCategory,
+    fallbackId || 'more'
+  );
+
+  if (existingCategories.length === 0) {
+    return {
+      categoryId: suggested.categoryId,
+      categoryName: suggested.categoryId,
+      serviceType: suggested.serviceType,
+    };
+  }
+
+  const combined = `${providerCategory} ${serviceName}`.toLowerCase();
+
+  // 1. Match suggested canonical platform against existing categories (exact ID, alias ID, or name)
+  const aliases = PLATFORM_ALIASES[suggested.categoryId] ?? [suggested.categoryId];
+  const canonicalMatch = existingCategories.find((cat) => {
+    const cid = cat.id.trim().toLowerCase();
+    const cname = cat.name.trim().toLowerCase();
+    if (cid === suggested.categoryId) return true;
+    return aliases.some(
+      (alias) =>
+        cid === alias ||
+        cname === alias ||
+        (alias.length >= 3 && (cid.includes(alias) || cname.includes(alias)))
+    );
+  });
+
+  if (canonicalMatch && suggested.categoryId !== (fallbackId || 'more')) {
+    return {
+      categoryId: canonicalMatch.id,
+      categoryName: canonicalMatch.name,
+      serviceType: suggested.serviceType,
+    };
+  }
+
+  // 2. Dynamically check all existing category names/IDs (e.g. Discord, Spotify, Snapchat, Pinterest, Threads, Twitch)
+  const dynamicMatch = existingCategories.find((cat) => {
+    const cid = cat.id.trim().toLowerCase();
+    const cname = cat.name.trim().toLowerCase();
+    const candidates = Array.from(
+      new Set([
+        cid,
+        cname,
+        ...cname.split(/[\s/&(),.-]+/).filter((token) => token.length >= 3),
+      ])
+    ).filter((token) => token.length >= 2 && !['social', 'media', 'more', 'other'].includes(token));
+
+    return candidates.some((token) =>
+      new RegExp(`\\b${escapeRegExp(token)}\\b`, 'i').test(combined)
+    );
+  });
+
+  if (dynamicMatch) {
+    return {
+      categoryId: dynamicMatch.id,
+      categoryName: dynamicMatch.name,
+      serviceType: suggested.serviceType,
+    };
+  }
+
+  // 3. Safe fallback to an existing category document (satisfies Firestore category existence rules)
+  const safeFallback = canonicalMatch ?? defaultCat ?? existingCategories[0];
+  return {
+    categoryId: safeFallback.id,
+    categoryName: safeFallback.name,
+    serviceType: suggested.serviceType,
+  };
 }

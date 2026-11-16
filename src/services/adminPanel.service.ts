@@ -14,6 +14,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import {
   createAuthUserOnSecondaryApp,
@@ -56,7 +57,12 @@ import { APP_CONFIG } from '../config/app.config';
 import { PRODUCT_INFO } from '../config/product.config';
 import type { ServiceType } from '../types/service.types';
 import { adminService } from './admin.service';
-import { getProviderAdapter } from './providerAdapter';
+import { invalidatePublicCatalogCache } from './firebaseDataClient';
+import {
+  getProviderAdapter,
+  resolveCategoryForImportedService,
+  type ProviderServiceDTO,
+} from './providerAdapter';
 import { userManagementService, type ManagedUserRecord } from './userManagement.service';
 
 async function getCurrencySymbol(): Promise<string> {
@@ -905,6 +911,7 @@ export const adminPanelService = {
       };
 
       await setDoc(ref, payload);
+      invalidatePublicCatalogCache();
       return srvId;
     } catch (error) {
       if (error instanceof Error && error.message.includes('Duplicate mapping detected')) {
@@ -914,6 +921,158 @@ export const adminPanelService = {
         error,
         isUpdate ? OperationType.UPDATE : OperationType.CREATE,
         `${FIRESTORE_COLLECTIONS.services}/${srvId}`,
+        services.auth
+      );
+    }
+  },
+
+  async bulkImportProviderServices(input: {
+    providerId: string;
+    items: ProviderServiceDTO[];
+    profitPerThousand: number;
+    categories: AdminCategoryItem[];
+    status?: 'active' | 'inactive';
+  }): Promise<{
+    importedCount: number;
+    skippedDuplicateCount: number;
+    categoryCounts: Record<string, number>;
+  }> {
+    const services = getFirebaseServices();
+    if (!services) throw new Error('Firebase is not connected.');
+
+    const cleanProviderId = input.providerId.trim().slice(0, 64);
+    if (!cleanProviderId) {
+      throw new Error('Valid provider ID is required for bulk import.');
+    }
+
+    const profit = Number(input.profitPerThousand);
+    if (!Number.isFinite(profit) || profit < 0) {
+      throw new Error('Profit amount per 1,000 units must be 0 or a positive number.');
+    }
+
+    if (!Array.isArray(input.categories) || input.categories.length === 0) {
+      throw new Error('At least one category must exist in Firestore before importing services.');
+    }
+
+    if (!Array.isArray(input.items) || input.items.length === 0) {
+      return { importedCount: 0, skippedDuplicateCount: 0, categoryCounts: {} };
+    }
+
+    try {
+      const existingSnap = await getDocs(collection(services.db, FIRESTORE_COLLECTIONS.services));
+      const existingDocIds = new Set<string>();
+      const existingProviderServiceIds = new Set<string>();
+
+      for (const docSnap of existingSnap.docs) {
+        existingDocIds.add(docSnap.id);
+        const data = docSnap.data() as Partial<FirestoreServiceDoc>;
+        if (
+          data.providerId === cleanProviderId &&
+          typeof data.providerServiceId === 'string' &&
+          data.providerServiceId.trim()
+        ) {
+          existingProviderServiceIds.add(data.providerServiceId.trim());
+        }
+      }
+
+      const validCategoryIds = new Set(input.categories.map((c) => c.id));
+      const fallbackCategoryId = input.categories[0].id;
+      const safeProv = cleanProviderId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32) || 'prov';
+      const targetStatus: 'active' | 'inactive' = input.status ?? 'active';
+
+      const toWrite: Array<{ id: string; payload: FirestoreServiceDoc; categoryName: string }> = [];
+      let skippedDuplicateCount = 0;
+      const categoryCounts: Record<string, number> = {};
+
+      for (const item of input.items) {
+        const cleanRemoteId = String(item.providerServiceId || '').trim().slice(0, 64);
+        const cleanName = String(item.name || '').trim();
+        if (!cleanRemoteId || !cleanName) continue;
+
+        if (existingProviderServiceIds.has(cleanRemoteId)) {
+          skippedDuplicateCount += 1;
+          continue;
+        }
+        existingProviderServiceIds.add(cleanRemoteId);
+
+        const resolved = resolveCategoryForImportedService(
+          cleanName,
+          String(item.category || ''),
+          input.categories
+        );
+        const finalCategoryId = validCategoryIds.has(resolved.categoryId)
+          ? resolved.categoryId
+          : fallbackCategoryId;
+
+        const safeRemote = cleanRemoteId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'srv';
+        let srvId = `imp-${safeProv}-${safeRemote}`.slice(0, 128);
+        let collisionCounter = 1;
+        while (existingDocIds.has(srvId)) {
+          const suffix = `-${collisionCounter++}`;
+          srvId = `imp-${safeProv}-${safeRemote}`.slice(0, 128 - suffix.length) + suffix;
+        }
+        existingDocIds.add(srvId);
+
+        const costPrice = Math.max(0, Number(Number(item.rate || 0).toFixed(4)));
+        const sellingPrice = Math.max(0, Number((costPrice + profit).toFixed(4)));
+        const minQty = Math.max(1, Math.floor(Number(item.min) || 1));
+        const maxQty = Math.max(minQty, Math.floor(Number(item.max) || minQty));
+        const rawDesc = (item.description || `${item.category || 'SMM'} (${item.type || 'Default'})`)
+          .trim()
+          .slice(0, 500);
+
+        const payload: FirestoreServiceDoc = {
+          id: srvId,
+          categoryId: finalCategoryId,
+          name: cleanName.slice(0, 160),
+          serviceType: (resolved.serviceType || 'Other').slice(0, 40) as ServiceType,
+          description: rawDesc,
+          providerId: cleanProviderId,
+          providerServiceId: cleanRemoteId,
+          costPrice,
+          sellingPrice,
+          minQuantity: minQty,
+          maxQuantity: maxQty,
+          averageTime: '15 minutes',
+          deliverySpeed: (item.dripfeed ? 'Drip-feed Enabled' : 'Instant Delivery').slice(0, 64),
+          refillGuaranteed: Boolean(item.refill),
+          status: targetStatus,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        toWrite.push({
+          id: srvId,
+          payload,
+          categoryName: resolved.categoryName,
+        });
+        categoryCounts[resolved.categoryName] = (categoryCounts[resolved.categoryName] ?? 0) + 1;
+      }
+
+      const CHUNK_SIZE = 400;
+      for (let i = 0; i < toWrite.length; i += CHUNK_SIZE) {
+        const chunk = toWrite.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(services.db);
+        for (const entry of chunk) {
+          batch.set(doc(services.db, FIRESTORE_COLLECTIONS.services, entry.id), entry.payload);
+        }
+        await batch.commit();
+      }
+
+      if (toWrite.length > 0) {
+        invalidatePublicCatalogCache();
+      }
+
+      return {
+        importedCount: toWrite.length,
+        skippedDuplicateCount,
+        categoryCounts,
+      };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.CREATE,
+        FIRESTORE_COLLECTIONS.services,
         services.auth
       );
     }
@@ -2043,6 +2202,8 @@ export const adminPanelService = {
     apiUrl: string;
     apiKey: string;
     providerFormat?: string;
+    lastBalance?: number;
+    lastBalanceCurrency?: string;
     status: 'active' | 'inactive';
   }): Promise<string> {
     const services = getFirebaseServices();
@@ -2071,18 +2232,23 @@ export const adminPanelService = {
         }
       }
 
+      const resolvedBalance =
+        typeof input.lastBalance === 'number' && Number.isFinite(input.lastBalance)
+          ? Number(input.lastBalance)
+          : typeof existingData?.lastBalance === 'number'
+            ? existingData.lastBalance
+            : undefined;
+      const resolvedCurrency =
+        input.lastBalanceCurrency?.trim() || existingData?.lastBalanceCurrency || undefined;
+
       const payload: FirestoreApiProviderDoc = {
         id: provId,
         name: input.name.trim(),
         apiUrl: cleanUrl,
         apiKey: input.apiKey.trim(),
         providerFormat: input.providerFormat?.trim() || 'standard_v2',
-        ...(typeof existingData?.lastBalance === 'number'
-          ? { lastBalance: existingData.lastBalance }
-          : {}),
-        ...(existingData?.lastBalanceCurrency
-          ? { lastBalanceCurrency: existingData.lastBalanceCurrency }
-          : {}),
+        ...(typeof resolvedBalance === 'number' ? { lastBalance: resolvedBalance } : {}),
+        ...(resolvedCurrency ? { lastBalanceCurrency: resolvedCurrency.slice(0, 16) } : {}),
         status: input.status,
         createdAt: existingData?.createdAt ?? serverTimestamp(),
         updatedAt: serverTimestamp(),
