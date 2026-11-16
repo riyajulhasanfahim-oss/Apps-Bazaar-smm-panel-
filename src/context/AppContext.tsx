@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import type { User as FirebaseAuthUser } from 'firebase/auth';
+import { sendEmailVerification, type User as FirebaseAuthUser } from 'firebase/auth';
 import { collection, doc, limit, onSnapshot, query, where } from 'firebase/firestore';
 import type { DashboardTab } from '../config/navigation.config';
 import { catalogService } from '../services/services.service';
@@ -221,6 +221,26 @@ function toCustomerProfile(
   };
 }
 
+function isAdminRouteUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  const path = window.location.pathname.toLowerCase();
+  const hash = window.location.hash.toLowerCase();
+  return (
+    path === '/admin' ||
+    path.startsWith('/admin/') ||
+    path.startsWith('/admin-') ||
+    hash === '#admin' ||
+    hash.startsWith('#/admin')
+  );
+}
+
+function clearAdminUrlFromBrowser(): void {
+  if (typeof window === 'undefined') return;
+  if (isAdminRouteUrl()) {
+    window.history.replaceState(null, '', '/');
+  }
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [viewMode, setViewModeState] = useState<AppViewMode>('dashboard');
   const [activeTab, setActiveTab] = useState<DashboardTab>('home');
@@ -280,6 +300,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const orderInFlightRef = useRef<boolean>(false);
   const lastOrderSigRef = useRef<{ sig: string; at: number } | null>(null);
   const pendingRedirectRef = useRef<PendingRedirectTarget | null>(null);
+  const requestedAdminRouteRef = useRef<boolean>(isAdminRouteUrl());
+  const verificationNoticeSentRef = useRef<boolean>(false);
 
   const adminPermissions = getAdminPermissions(staffRole);
   const openSetupWizard = useCallback(() => setSetupWizardOpen(true), []);
@@ -299,12 +321,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setOrderDraft(null);
   }, []);
 
-  const setViewMode = useCallback((mode: AppViewMode) => {
-    setViewModeState(mode);
-  }, []);
+  const setViewMode = useCallback(
+    (mode: AppViewMode) => {
+      if (mode === 'admin') {
+        if (!firebaseUser || userRole !== 'admin' || accountStatus !== 'active') {
+          clearAdminUrlFromBrowser();
+          setActiveTab('home');
+          setViewModeState('dashboard');
+          return;
+        }
+      } else {
+        clearAdminUrlFromBrowser();
+      }
+      setViewModeState(mode);
+    },
+    [accountStatus, firebaseUser, userRole]
+  );
 
   const goToHome = useCallback(() => {
     pendingRedirectRef.current = null;
+    clearAdminUrlFromBrowser();
     setActiveTab('home');
     setViewModeState('dashboard');
   }, []);
@@ -354,9 +390,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const pending = pendingRedirectRef.current;
     pendingRedirectRef.current = null;
 
+    if (effectiveRole === 'admin') {
+      setActiveTab('home');
+      setViewModeState('admin');
+      return;
+    }
+
+    clearAdminUrlFromBrowser();
+
     if (!pending) {
       setActiveTab('home');
-      setViewModeState(effectiveRole === 'admin' ? 'admin' : 'dashboard');
+      setViewModeState('dashboard');
       return;
     }
 
@@ -422,7 +466,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [systemSettings]);
 
-  const hydrateUserWorkspace = useCallback(async (authUser: FirebaseAuthUser | null) => {
+  const hydrateUserWorkspace = useCallback(async (authUser: FirebaseAuthUser | null): Promise<UserRole> => {
     setDataError(null);
     setIsLoading(true);
     try {
@@ -453,7 +497,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setTransactions([]);
         setNotifications([]);
         setTickets([]);
-        return;
+        return 'user';
       }
 
       const [
@@ -476,11 +520,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
         ? staffAccess.staffRole
-        : authProfile.role === 'admin'
-        ? 'admin'
         : null;
-      const effectiveRole: UserRole =
-        authProfile.role === 'admin' || staffAccess.isStaff ? 'admin' : 'user';
+      const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
 
       const mappedProfile = toCustomerProfile(
         {
@@ -530,8 +571,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setTransactions(loadedTxns);
       setNotifications(loadedNotifs);
       setTickets(loadedTickets);
+      return effectiveRole;
     } catch (error) {
       setDataError(toUserFriendlyFirebaseError(error));
+      return 'user';
     } finally {
       setIsLoading(false);
     }
@@ -569,16 +612,56 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
+
+    // Immediately hydrate public homepage catalog & settings without blocking on auth
+    Promise.all([
+      catalogService.getPlatforms(),
+      catalogService.getAllServices(),
+      adminService.getSystemSettings(),
+      walletService.getActivePaymentMethods().catch(() => []),
+    ])
+      .then(([loadedPlatforms, loadedServices, loadedSettings, loadedMethods]) => {
+        if (!active) return;
+        setPlatforms(loadedPlatforms);
+        setServices(loadedServices);
+        setSystemSettings(loadedSettings);
+        setPaymentMethods(loadedMethods);
+        if (loadedPlatforms.length > 0) {
+          setSelectedPlatform((prev) =>
+            loadedPlatforms.some((p) => p.id === prev) ? prev : loadedPlatforms[0].id
+          );
+        }
+        setIsLoading(false);
+      })
+      .catch(() => undefined);
+
     refreshSetupState();
 
     const unsubscribe = subscribeFirebaseAuth(async (user) => {
       if (!active) return;
       setFirebaseUser(user);
-      await hydrateUserWorkspace(user);
+      const effectiveRole = await hydrateUserWorkspace(user);
       if (!active) return;
       setAuthReady(true);
+
       if (user) {
+        const isVerifiedAdmin = effectiveRole === 'admin';
+        if (requestedAdminRouteRef.current) {
+          requestedAdminRouteRef.current = false;
+          if (isVerifiedAdmin) {
+            setViewModeState('admin');
+          } else {
+            clearAdminUrlFromBrowser();
+            setActiveTab('home');
+            setViewModeState('dashboard');
+          }
+        }
         refreshSetupState();
+      } else if (requestedAdminRouteRef.current) {
+        requestedAdminRouteRef.current = false;
+        clearAdminUrlFromBrowser();
+        setActiveTab('home');
+        setViewModeState('dashboard');
       }
     });
 
@@ -587,6 +670,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       unsubscribe();
     };
   }, [hydrateUserWorkspace, refreshSetupState]);
+
+  // Protect admin URL route against manual navigation by unauthorized or signed-out users
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const enforceRouteGuard = () => {
+      if (isAdminRouteUrl()) {
+        if (firebaseUser && userRole === 'admin' && accountStatus === 'active') {
+          setViewModeState('admin');
+        } else {
+          clearAdminUrlFromBrowser();
+          setActiveTab('home');
+          setViewModeState('dashboard');
+        }
+      }
+    };
+    window.addEventListener('popstate', enforceRouteGuard);
+    window.addEventListener('hashchange', enforceRouteGuard);
+    return () => {
+      window.removeEventListener('popstate', enforceRouteGuard);
+      window.removeEventListener('hashchange', enforceRouteGuard);
+    };
+  }, [accountStatus, firebaseUser, userRole]);
 
   // Real-time balance, orders, notifications, tickets & payment status listeners
   useEffect(() => {
@@ -811,7 +916,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (input: LoginInput): Promise<AuthActionResult> => {
       try {
         const signedInProfile = await authService.loginWithEmail(input);
-        const currentUser = getFirebaseServices()?.auth.currentUser;
+        const currentUser = getFirebaseServices()?.auth.currentUser ?? null;
+        if (currentUser) {
+          setFirebaseUser(currentUser);
+        }
+
         const staffAccess = await adminService.verifyStaffAccess(
           signedInProfile.uid,
           signedInProfile.email,
@@ -819,11 +928,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
         const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
           ? staffAccess.staffRole
-          : signedInProfile.role === 'admin'
-          ? 'admin'
           : null;
-        const effectiveRole: UserRole =
-          signedInProfile.role === 'admin' || staffAccess.isStaff ? 'admin' : 'user';
+        const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
 
         setProfile(
           toCustomerProfile({ ...signedInProfile, role: effectiveRole }, resolvedStaffRole)
@@ -832,22 +938,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setUserRole(effectiveRole);
         setStaffRole(resolvedStaffRole);
 
+        if (
+          staffAccess.reason === 'email_unverified' &&
+          currentUser &&
+          !verificationNoticeSentRef.current
+        ) {
+          verificationNoticeSentRef.current = true;
+          void sendEmailVerification(currentUser).catch(() => undefined);
+          showToast({
+            title: 'Email Verification Required',
+            description:
+              'A verification link was sent to your admin email. Verify your email or sign in with Google to unlock Admin Panel access.',
+            tone: 'warning',
+          });
+        }
+
         if (signedInProfile.status !== 'active') {
           pendingRedirectRef.current = null;
+          clearAdminUrlFromBrowser();
           setActiveTab('home');
           setViewModeState('dashboard');
           return { success: true };
         }
 
         applyPostAuthRedirect(effectiveRole);
-        showToast({
-          title: 'Signed In',
-          description:
-            effectiveRole === 'admin'
-              ? `${getAdminRoleLabel(resolvedStaffRole)} access verified.`
-              : `Welcome back, ${signedInProfile.name}.`,
-          tone: 'success',
-        });
+        if (staffAccess.reason !== 'email_unverified') {
+          showToast({
+            title: 'Signed In',
+            description:
+              effectiveRole === 'admin'
+                ? 'Administrator access verified.'
+                : `Welcome back, ${signedInProfile.name}.`,
+            tone: 'success',
+          });
+        }
         return { success: true };
       } catch (error) {
         return {
@@ -862,7 +986,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const loginWithGoogle = useCallback(async (): Promise<AuthActionResult> => {
     try {
       const signedInProfile = await authService.loginWithGoogle();
-      const currentUser = getFirebaseServices()?.auth.currentUser;
+      const currentUser = getFirebaseServices()?.auth.currentUser ?? null;
+      if (currentUser) {
+        setFirebaseUser(currentUser);
+      }
+
       const staffAccess = await adminService.verifyStaffAccess(
         signedInProfile.uid,
         signedInProfile.email,
@@ -870,11 +998,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
       const resolvedStaffRole: AdminStaffRole | null = staffAccess.isStaff
         ? staffAccess.staffRole
-        : signedInProfile.role === 'admin'
-        ? 'admin'
         : null;
-      const effectiveRole: UserRole =
-        signedInProfile.role === 'admin' || staffAccess.isStaff ? 'admin' : 'user';
+      const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
 
       setProfile(
         toCustomerProfile({ ...signedInProfile, role: effectiveRole }, resolvedStaffRole)
@@ -884,6 +1009,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setStaffRole(resolvedStaffRole);
       if (signedInProfile.status !== 'active') {
         pendingRedirectRef.current = null;
+        clearAdminUrlFromBrowser();
         setActiveTab('home');
         setViewModeState('dashboard');
         return { success: true };
@@ -892,7 +1018,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       applyPostAuthRedirect(effectiveRole);
       showToast({
         title: 'Signed In with Google',
-        description: `Welcome, ${signedInProfile.name}.`,
+        description:
+          effectiveRole === 'admin'
+            ? 'Administrator access verified.'
+            : `Welcome, ${signedInProfile.name}.`,
         tone: 'success',
       });
       return { success: true };
@@ -946,6 +1075,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const logoutUser = useCallback(async () => {
     await authService.logout();
     pendingRedirectRef.current = null;
+    clearAdminUrlFromBrowser();
     setOrderDraft(null);
     setFirebaseUser(null);
     setProfile(null);
@@ -1000,7 +1130,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!staffAccess.isStaff) {
         showToast({
           title: 'Access Restricted',
-          description: 'Signed-in account does not hold Staff/Admin privileges.',
+          description: 'Signed-in account does not hold Administrator privileges.',
           tone: 'warning',
         });
         return false;
@@ -1024,11 +1154,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const signOutAdmin = useCallback(async () => {
     await signOutFirebase();
+    pendingRedirectRef.current = null;
+    clearAdminUrlFromBrowser();
     setFirebaseUser(null);
     setProfile(null);
     setUserRole('user');
     setStaffRole(null);
-    setViewModeState('login');
+    setActiveTab('home');
+    setViewModeState('dashboard');
     showToast({
       title: 'Signed Out',
       description: 'Admin session closed securely.',

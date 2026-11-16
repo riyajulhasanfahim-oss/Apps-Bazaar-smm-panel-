@@ -2,17 +2,14 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Bell,
-  KeyRound,
   Lock,
   LogOut,
   Menu,
-  ShieldAlert,
   Sparkles,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { canAccessAdminSection, getAdminRoleLabel } from '../lib/permissions';
 import { adminPanelService } from '../services/adminPanel.service';
-import { BrandLogo } from '../components/common/BrandLogo';
 import { ADMIN_NAV_ITEMS, AdminSidebar } from '../components/admin/AdminSidebar';
 import type { AdminSectionId } from '../components/admin/AdminNavTypes';
 import { AdminDashboardView } from '../components/admin/AdminDashboardView';
@@ -46,7 +43,6 @@ export function AdminPanelPage() {
     adminPermissions,
     setupState,
     openSetupWizard,
-    signInAdminWithGoogle,
     signOutAdmin,
     refreshCustomerData,
   } = useApp();
@@ -90,83 +86,14 @@ export function AdminPanelPage() {
     setActiveSection(next);
   };
 
+  useEffect(() => {
+    if (!isAuthorizedStaff) {
+      goToHome();
+    }
+  }, [goToHome, isAuthorizedStaff]);
+
   if (!isAuthorizedStaff) {
-    return (
-      <div className="min-h-screen bg-[#F6F5FB] text-slate-900">
-        <header className="sticky top-0 z-30 h-16 border-b border-violet-100 bg-white/95 backdrop-blur-md">
-          <div className="mx-auto flex h-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
-            <BrandLogo size="sm" />
-            <div className="flex items-center gap-2.5">
-              <button
-                type="button"
-                onClick={goToHome}
-                className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                <span>Public Site</span>
-              </button>
-              {firebaseUser && (
-                <button
-                  type="button"
-                  onClick={() => setViewMode('dashboard')}
-                  className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-violet-700 px-3.5 text-xs font-semibold text-white hover:bg-violet-800"
-                >
-                  <span>Customer Panel</span>
-                </button>
-              )}
-            </div>
-          </div>
-        </header>
-
-        <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 lg:px-8">
-          <section className="mx-auto max-w-lg rounded-3xl border border-violet-100 bg-white p-6 sm:p-8 shadow-sm">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-100 text-violet-700">
-              <ShieldAlert className="h-6 w-6" aria-hidden="true" />
-            </div>
-            <h1 className="mt-4 font-display text-2xl font-extrabold text-slate-950">
-              Admin Authorization Required
-            </h1>
-            <p className="mt-2 text-sm leading-relaxed text-slate-600">
-              Admin Panel controls, user balance ledgers, API providers, and Firebase configuration are
-              strictly protected by RBAC security rules. Regular customer accounts cannot access this console.
-            </p>
-
-            {firebaseUser && accountStatus !== 'active' && (
-              <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-3.5 text-xs text-rose-900">
-                Account <span className="font-semibold">{firebaseUser.email}</span> is currently{' '}
-                <span className="font-bold uppercase">{accountStatus}</span>. Admin console access is
-                restricted for inactive accounts.
-              </div>
-            )}
-
-            {firebaseUser && accountStatus === 'active' && userRole !== 'admin' && (
-              <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900">
-                Signed in as <span className="font-semibold">{firebaseUser.email}</span> (role: user). Switch
-                to an authorized Admin or Staff account to continue.
-              </div>
-            )}
-
-            <div className="mt-6 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={signInAdminWithGoogle}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-700 to-purple-600 px-5 text-sm font-bold text-white shadow-md shadow-violet-700/20 hover:from-violet-800 hover:to-purple-700"
-              >
-                <KeyRound className="h-4 w-4" aria-hidden="true" />
-                <span>Sign In with Admin Google Account</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode(firebaseUser ? 'dashboard' : 'login')}
-                className="inline-flex h-11 items-center justify-center rounded-xl border border-slate-200 px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                {firebaseUser ? 'Go to Customer Dashboard' : 'Customer Login'}
-              </button>
-            </div>
-          </section>
-        </main>
-      </div>
-    );
+    return null;
   }
 
   return (

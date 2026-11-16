@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bell, ChevronDown, LogOut, Menu, User, Globe, ShieldCheck } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, Menu, User, Globe } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { getAdminRoleLabel } from '../../lib/permissions';
 import { BrandLogo } from '../common/BrandLogo';
 
 interface DashboardHeaderProps {
@@ -25,10 +24,7 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
     handleNotificationClick,
     markAllNotificationsRead,
     setActiveTab,
-    setViewMode,
     openAuthModal,
-    userRole,
-    staffRole,
     logoutUser,
   } = useApp();
 
@@ -76,7 +72,7 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
             </span>
             <span aria-hidden="true">·</span>
             <span>
-              {firebaseUser ? (profile?.tierLabel ?? 'Customer Account') : 'Browse Services'}
+              {firebaseUser ? 'Customer Account' : 'Browse Services'}
             </span>
           </div>
         </div>
@@ -262,19 +258,6 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
                     <Globe className="h-4 w-4" />
                     Home Page
                   </button>
-                  {(userRole === 'admin' || staffRole !== null) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProfileOpen(false);
-                        setViewMode('admin');
-                      }}
-                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-semibold text-violet-700 hover:bg-violet-50"
-                    >
-                      <ShieldCheck className="h-4 w-4" />
-                      {staffRole ? `${getAdminRoleLabel(staffRole)} Console` : 'Admin Panel'}
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={async () => {

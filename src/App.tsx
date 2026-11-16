@@ -4,10 +4,9 @@
  */
 
 import React, { useState } from 'react';
-import { Ban, AlertTriangle, LogOut, Loader2 } from 'lucide-react';
+import { Ban, AlertTriangle, LogOut } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Toast } from './components/common/Toast';
-import { BrandLogo } from './components/common/BrandLogo';
 import { InstallAppBanner } from './components/common/InstallAppBanner';
 import { DashboardHeader } from './components/layout/DashboardHeader';
 import { DashboardSidebar } from './components/layout/DashboardSidebar';
@@ -25,18 +24,6 @@ import { NotificationsPage } from './pages/NotificationsPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { ApiDashboardPage } from './pages/ApiDashboardPage';
 import { AdminPanelPage } from './pages/AdminPanelPage';
-
-function AuthLoadingScreen() {
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#F6F5FB] px-4 text-center">
-      <BrandLogo showTagline size="lg" />
-      <div className="mt-6 flex items-center gap-2.5 text-sm font-semibold text-violet-800">
-        <Loader2 className="h-5 w-5 animate-spin text-violet-700" aria-hidden="true" />
-        <span>Verifying session security...</span>
-      </div>
-    </div>
-  );
-}
 
 function AccountStatusRestrictedView() {
   const { accountStatus, profile, logoutUser, goToHome } = useApp();
@@ -95,15 +82,11 @@ function DashboardShell() {
     useApp();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  if (!authReady) {
-    return <AuthLoadingScreen />;
-  }
-
   if (firebaseUser && accountStatus !== 'active') {
     return <AccountStatusRestrictedView />;
   }
 
-  if (!firebaseUser && activeTab !== 'home' && activeTab !== 'services') {
+  if (authReady && !firebaseUser && activeTab !== 'home' && activeTab !== 'services') {
     return <LoginPage />;
   }
 
@@ -164,24 +147,22 @@ function DashboardShell() {
 }
 
 function AppContent() {
-  const { viewMode, authReady } = useApp();
-
-  if (!authReady && (viewMode === 'dashboard' || viewMode === 'admin')) {
-    return (
-      <>
-        <AuthLoadingScreen />
-        <Toast />
-      </>
-    );
-  }
+  const { viewMode, firebaseUser, userRole, accountStatus } = useApp();
+  const canRenderAdmin =
+    viewMode === 'admin' &&
+    Boolean(firebaseUser) &&
+    userRole === 'admin' &&
+    accountStatus === 'active';
 
   return (
     <>
       {viewMode === 'login' && <LoginPage />}
       {viewMode === 'register' && <RegisterPage />}
       {viewMode === 'forgot-password' && <ForgotPasswordPage />}
-      {viewMode === 'dashboard' && <DashboardShell />}
-      {viewMode === 'admin' && <AdminPanelPage />}
+      {(viewMode === 'dashboard' || (viewMode === 'admin' && !canRenderAdmin)) && (
+        <DashboardShell />
+      )}
+      {canRenderAdmin && <AdminPanelPage />}
       <InstallAppBanner />
       <Toast />
     </>

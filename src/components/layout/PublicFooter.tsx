@@ -6,7 +6,7 @@ import { useApp } from '../../context/AppContext';
 import { BrandLogo } from '../common/BrandLogo';
 
 export function PublicFooter() {
-  const { setViewMode, openAuthModal, navigateProtected, systemSettings } = useApp();
+  const { openAuthModal, navigateProtected, systemSettings } = useApp();
 
   const brandName = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
   const brandDesc =
@@ -123,13 +123,6 @@ export function PublicFooter() {
             <span>
               {supportHours} · Currency: {currencyCode}
             </span>
-            <button
-              type="button"
-              onClick={() => setViewMode('admin')}
-              className="font-medium text-slate-500 transition-colors hover:text-violet-700"
-            >
-              Admin Console
-            </button>
           </div>
         </div>
       </div>

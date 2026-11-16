@@ -26,14 +26,18 @@ interface ProviderProxyBody {
   firebaseDatabaseId?: string;
 }
 
+const DESIGNATED_ADMIN_EMAIL = 'riyajulhasanfahim@gmail.com';
+
 interface FirebaseAppletConfigFile {
   projectId?: string;
   firestoreDatabaseId?: string;
+  apiKey?: string;
 }
 
 interface FirebaseTarget {
   projectId: string;
   databaseId: string;
+  apiKey?: string;
 }
 
 function loadFirebaseTargetConfig(): FirebaseTarget {
@@ -45,6 +49,11 @@ function loadFirebaseTargetConfig(): FirebaseTarget {
         return {
           projectId: parsed.projectId,
           databaseId: parsed.firestoreDatabaseId || '(default)',
+          apiKey:
+            parsed.apiKey ||
+            process.env.VITE_FIREBASE_API_KEY ||
+            process.env.FIREBASE_API_KEY ||
+            '',
         };
       }
     }
@@ -55,6 +64,7 @@ function loadFirebaseTargetConfig(): FirebaseTarget {
     projectId: process.env.VITE_FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECT_ID || '',
     databaseId:
       process.env.VITE_FIREBASE_DATABASE_ID || process.env.FIREBASE_DATABASE_ID || '(default)',
+    apiKey: process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || '',
   };
 }
 
@@ -74,6 +84,7 @@ function resolveRequestFirebaseTarget(body: unknown): FirebaseTarget {
   return {
     projectId: validProject,
     databaseId: validDb || '(default)',
+    apiKey: fallback.apiKey,
   };
 }
 
@@ -135,8 +146,61 @@ async function fetchFirestoreDocWithToken(
   return parseFirestoreDocumentFields(json);
 }
 
+interface VerifiedFirebaseUser {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+  disabled: boolean;
+}
+
+async function lookupFirebaseAuthUser(
+  idToken: string,
+  apiKey?: string
+): Promise<VerifiedFirebaseUser | null> {
+  const resolvedKey = (apiKey || loadFirebaseTargetConfig().apiKey || '').trim();
+  if (!resolvedKey) {
+    return null;
+  }
+
+  const response = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(
+      resolvedKey
+    )}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error('Unauthorized: Invalid or expired authentication session.');
+  }
+
+  const json = (await response.json()) as {
+    users?: Array<{
+      localId?: string;
+      email?: string;
+      emailVerified?: boolean;
+      disabled?: boolean;
+    }>;
+  };
+
+  const user = json.users?.[0];
+  if (!user || !user.localId) {
+    throw new Error('Unauthorized: User account not found.');
+  }
+
+  return {
+    uid: user.localId,
+    email: (user.email || '').trim().toLowerCase(),
+    emailVerified: Boolean(user.emailVerified),
+    disabled: Boolean(user.disabled),
+  };
+}
+
 /**
- * Verifies an Admin/Manager Firebase ID token directly against Firestore REST RBAC rules.
+ * Verifies an Admin Firebase ID token directly against Firebase Auth AND Firestore REST RBAC rules.
  * Firestore rejects non-admin/unauthenticated tokens with 401/403 even if the doc doesn't exist.
  */
 async function verifyAdminViaFirestoreRest(
@@ -146,6 +210,17 @@ async function verifyAdminViaFirestoreRest(
   if (!target.projectId) {
     throw new Error('Firebase project configuration is missing.');
   }
+
+  const authUser = await lookupFirebaseAuthUser(idToken, target.apiKey);
+  if (authUser) {
+    if (authUser.disabled) {
+      throw new Error('Unauthorized: Account is disabled.');
+    }
+    if (authUser.email !== DESIGNATED_ADMIN_EMAIL || !authUser.emailVerified) {
+      throw new Error('Unauthorized: Admin privileges required.');
+    }
+  }
+
   const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
     target.projectId
   )}/databases/${encodeURIComponent(target.databaseId)}/documents/settings/setup`;
@@ -343,6 +418,54 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  app.post('/api/auth/verify-admin', async (req: Request, res: Response) => {
+    const idToken = extractBearerToken(req);
+    if (!idToken) {
+      res.status(401).json({ ok: false, isAdmin: false, error: 'Authentication token required.' });
+      return;
+    }
+
+    const fbTarget = resolveRequestFirebaseTarget(req.body);
+    try {
+      const authUser = await lookupFirebaseAuthUser(idToken, fbTarget.apiKey);
+      if (authUser) {
+        if (authUser.disabled || authUser.email !== DESIGNATED_ADMIN_EMAIL) {
+          res.json({
+            ok: true,
+            isAdmin: false,
+            staffRole: null,
+            reason: authUser.disabled ? 'disabled' : 'not_admin',
+          });
+          return;
+        }
+        if (!authUser.emailVerified) {
+          res.json({
+            ok: true,
+            isAdmin: false,
+            staffRole: null,
+            reason: 'email_unverified',
+          });
+          return;
+        }
+      }
+
+      await verifyAdminViaFirestoreRest(idToken, fbTarget);
+      res.json({
+        ok: true,
+        isAdmin: true,
+        staffRole: 'super_admin',
+        reason: 'verified',
+      });
+    } catch {
+      res.json({
+        ok: true,
+        isAdmin: false,
+        staffRole: null,
+        reason: 'not_admin',
+      });
+    }
+  });
+
   registerGatewayRoutes(app, {
     resolveRequestFirebaseTarget,
     extractBearerToken,
@@ -378,6 +501,7 @@ async function startServer() {
     const fbTarget = resolveRequestFirebaseTarget(req.body);
     let secretKey = '';
     try {
+      await verifyAdminViaFirestoreRest(idToken, fbTarget);
       const orderDoc = await fetchFirestoreDocWithToken(`orders/${orderId}`, idToken, fbTarget);
       if (orderDoc.refunded) {
         res.status(400).json({ ok: false, error: 'Order was already refunded.' });
@@ -470,6 +594,7 @@ async function startServer() {
     let secretKey = '';
     let currentRetryCount = 0;
     try {
+      await verifyAdminViaFirestoreRest(idToken, fbTarget);
       const orderDoc = await fetchFirestoreDocWithToken(`orders/${orderId}`, idToken, fbTarget);
       const providerId = String(orderDoc.providerId || '').trim();
       const providerOrderId = String(orderDoc.providerOrderId || '').trim();

@@ -8,52 +8,87 @@ import {
 } from '../lib/firestore/collections';
 import { OperationType, handleFirestoreError } from '../lib/firestore/errors';
 
-const BOOTSTRAP_ADMIN_EMAIL = 'frofficialbd1@gmail.com';
-const VALID_STAFF_ROLES: AdminStaffRole[] = [
-  'super_admin',
-  'admin',
-  'manager',
-  'support_staff',
-];
+const DESIGNATED_ADMIN_EMAIL = 'riyajulhasanfahim@gmail.com';
 
 export interface StaffAccessVerification {
   isStaff: boolean;
   staffRole: AdminStaffRole | null;
+  reason?: 'verified' | 'not_admin' | 'email_unverified';
 }
 
 export const adminService = {
-  /**
-   * Verifies granular staff RBAC role from verified bootstrap owner email or active adminUsers record.
-   */
-  async verifyStaffAccess(
-    uid: string,
-    email?: string | null,
-    emailVerified?: boolean
-  ): Promise<StaffAccessVerification> {
-    if (emailVerified && email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL) {
-      return { isStaff: true, staffRole: 'super_admin' };
-    }
-
-    const services = getFirebaseServices();
-    if (!services) return { isStaff: false, staffRole: null };
-
-    try {
-      const adminSnap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.adminUsers, uid));
-      if (adminSnap.exists()) {
-        const data = adminSnap.data() as { role?: string; status?: string };
-        const role = data.role as AdminStaffRole;
-        if (data.status === 'active' && VALID_STAFF_ROLES.includes(role)) {
-          return { isStaff: true, staffRole: role };
-        }
-      }
-      return { isStaff: false, staffRole: null };
-    } catch {
-      return { isStaff: false, staffRole: null };
-    }
+  isDesignatedAdminEmail(email?: string | null): boolean {
+    return Boolean(email && email.trim().toLowerCase() === DESIGNATED_ADMIN_EMAIL);
   },
 
   /**
-   * Verifies whether the signed-in user holds any authorized admin/staff console access.
+   * Verifies server-side Admin authorization via /api/auth/verify-admin with Firebase ID token.
+   * Only the designated verified administrator (riyajulhasanfahim@gmail.com) is authorized.
+   */
+  async verifyStaffAccess(
+    _uid: string,
+    email?: string | null,
+    emailVerified?: boolean
+  ): Promise<StaffAccessVerification> {
+    if (!this.isDesignatedAdminEmail(email)) {
+      return { isStaff: false, staffRole: null, reason: 'not_admin' };
+    }
+
+    const services = getFirebaseServices();
+    if (!services || !services.auth.currentUser) {
+      return { isStaff: false, staffRole: null, reason: 'not_admin' };
+    }
+
+    try {
+      const idToken = await services.auth.currentUser.getIdToken();
+      const res = await fetch('/api/auth/verify-admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          firebaseProjectId: services.config.projectId,
+          firebaseDatabaseId: services.config.firestoreDatabaseId || '(default)',
+        }),
+      });
+
+      if (res.ok) {
+        const json = (await res.json()) as {
+          ok?: boolean;
+          isAdmin?: boolean;
+          staffRole?: AdminStaffRole | null;
+          reason?: 'verified' | 'not_admin' | 'email_unverified';
+        };
+        if (json.ok && json.isAdmin) {
+          return {
+            isStaff: true,
+            staffRole: json.staffRole || 'super_admin',
+            reason: 'verified',
+          };
+        }
+        return {
+          isStaff: false,
+          staffRole: null,
+          reason: json.reason || (emailVerified ? 'not_admin' : 'email_unverified'),
+        };
+      }
+    } catch {
+      // If server verify endpoint is unreachable (e.g. static build), fall back strictly to verified Firebase Auth user
+      if (emailVerified && this.isDesignatedAdminEmail(email)) {
+        return { isStaff: true, staffRole: 'super_admin', reason: 'verified' };
+      }
+    }
+
+    return {
+      isStaff: false,
+      staffRole: null,
+      reason: emailVerified ? 'not_admin' : 'email_unverified',
+    };
+  },
+
+  /**
+   * Verifies whether the signed-in user holds authorized admin access.
    */
   async verifyAdminRole(
     uid: string,

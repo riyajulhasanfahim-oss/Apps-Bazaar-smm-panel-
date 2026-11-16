@@ -292,23 +292,10 @@ export const authService = {
 
     if (snap.exists()) {
       const profile = mapFirestoreUser(snap.data() as FirestoreUserDoc);
-      try {
-        const adminSnap = await getDoc(
-          doc(services.db, FIRESTORE_COLLECTIONS.adminUsers, authUser.uid)
-        );
-        if (adminSnap.exists()) {
-          const adminData = adminSnap.data() as { status?: string; role?: string };
-          if (
-            adminData.status === 'active' &&
-            adminData.role &&
-            ['super_admin', 'admin', 'manager', 'support_staff'].includes(adminData.role)
-          ) {
-            profile.role = 'admin';
-          }
-        }
-      } catch {
-        // Non-admin users cannot read other adminUsers docs; ignore cleanly
-      }
+      const isDesignatedVerifiedAdmin =
+        Boolean(authUser.emailVerified) &&
+        authUser.email?.trim().toLowerCase() === 'riyajulhasanfahim@gmail.com';
+      profile.role = isDesignatedVerifiedAdmin ? 'admin' : 'user';
       return profile;
     }
 

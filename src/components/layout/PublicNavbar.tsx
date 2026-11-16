@@ -5,16 +5,12 @@ import { useApp } from '../../context/AppContext';
 import { BrandLogo } from '../common/BrandLogo';
 
 export function PublicNavbar() {
-  const { firebaseUser, userRole, setViewMode, navigateProtected } = useApp();
+  const { firebaseUser, setViewMode, navigateProtected } = useApp();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handlePrimaryAction = () => {
     if (firebaseUser) {
-      if (userRole === 'admin') {
-        setViewMode('admin');
-      } else {
-        navigateProtected('home');
-      }
+      navigateProtected('home');
       return;
     }
     setViewMode('login');
@@ -43,7 +39,7 @@ export function PublicNavbar() {
             onClick={handlePrimaryAction}
             className="hidden sm:inline-flex h-10 items-center justify-center rounded-xl bg-violet-700 px-4 text-sm font-semibold text-white shadow-sm shadow-violet-700/20 transition-colors hover:bg-violet-800 whitespace-nowrap shrink-0"
           >
-            {firebaseUser ? (userRole === 'admin' ? 'Admin Panel' : 'Open Dashboard') : 'Customer Login'}
+            {firebaseUser ? 'Open Dashboard' : 'Customer Login'}
           </button>
           <button
             type="button"
@@ -79,7 +75,7 @@ export function PublicNavbar() {
                   }}
                   className="col-span-2 flex h-11 items-center justify-center rounded-xl bg-violet-700 text-sm font-semibold text-white"
                 >
-                  {userRole === 'admin' ? 'Open Admin Panel' : 'Open Dashboard'}
+                  Open Dashboard
                 </button>
               ) : (
                 <>
