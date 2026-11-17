@@ -293,6 +293,7 @@ export async function fetchPublicCatalogBundle(options?: {
           id: data.id as PlatformId,
           name: data.name,
           shortName: data.id === 'x' || data.name.toLowerCase().startsWith('x ') ? 'X' : data.name,
+          icon: data.icon,
           description: data.description ?? '',
           accentColor: '#6D28D9',
           bgTint: 'bg-violet-50',

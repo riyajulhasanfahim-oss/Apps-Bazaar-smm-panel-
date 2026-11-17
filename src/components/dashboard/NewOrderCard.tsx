@@ -230,7 +230,12 @@ export function NewOrderCard() {
               </label>
               <div className="relative flex items-center">
                 <span className="pointer-events-none absolute left-3">
-                  <PlatformIcon platform={selectedPlatform} size="xs" />
+                  <PlatformIcon
+                    platform={selectedPlatform}
+                    name={platforms.find((p) => p.id === selectedPlatform)?.name}
+                    icon={platforms.find((p) => p.id === selectedPlatform)?.icon}
+                    size="xs"
+                  />
                 </span>
                 <select
                   id="order-category"
@@ -267,7 +272,12 @@ export function NewOrderCard() {
               </label>
               <div className="relative flex items-center">
                 <span className="pointer-events-none absolute left-3">
-                  <PlatformIcon platform={selectedPlatform} size="xs" />
+                  <PlatformIcon
+                    platform={selectedPlatform}
+                    name={platforms.find((p) => p.id === selectedPlatform)?.name}
+                    icon={platforms.find((p) => p.id === selectedPlatform)?.icon}
+                    size="xs"
+                  />
                 </span>
                 <select
                   id="order-service"

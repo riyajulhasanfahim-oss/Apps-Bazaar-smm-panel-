@@ -5,6 +5,7 @@ import { NewOrderCard } from '../components/dashboard/NewOrderCard';
 import { PopularServices } from '../components/dashboard/PopularServices';
 import { RecentOrdersCard } from '../components/dashboard/RecentOrdersCard';
 import { SupportBanner } from '../components/dashboard/SupportBanner';
+import { ServiceNoticeCard } from '../components/dashboard/ServiceNoticeCard';
 
 export function DashboardHome() {
   return (
@@ -15,6 +16,7 @@ export function DashboardHome() {
       <NewOrderCard />
       <RecentOrdersCard />
       <SupportBanner />
+      <ServiceNoticeCard />
     </div>
   );
 }

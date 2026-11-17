@@ -4,10 +4,86 @@ import type { PlatformId } from '../../types';
 
 interface PlatformIconProps {
   platform: PlatformId | string;
+  name?: string;
+  icon?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg';
 }
 
-export function PlatformIcon({ platform, size = 'md' }: PlatformIconProps) {
+function matchSpecificPlatform(raw: string): string | null {
+  if (!raw) return null;
+
+  if (
+    raw === 'instagram' ||
+    raw.includes('instagram') ||
+    /\binsta\b/.test(raw) ||
+    /(?:^|[\s_/-])ig(?:$|[\s_/-])/.test(raw)
+  ) {
+    return 'instagram';
+  }
+  if (
+    raw === 'youtube' ||
+    raw.includes('youtube') ||
+    /(?:^|[\s_/-])yt(?:$|[\s_/-])/.test(raw)
+  ) {
+    return 'youtube';
+  }
+  if (
+    raw === 'facebook' ||
+    raw.includes('facebook') ||
+    /(?:^|[\s_/-])fb(?:$|[\s_/-])/.test(raw)
+  ) {
+    return 'facebook';
+  }
+  if (raw === 'tiktok' || raw.includes('tiktok') || /tik[\s_-]*tok/.test(raw)) {
+    return 'tiktok';
+  }
+  if (
+    raw === 'telegram' ||
+    raw.includes('telegram') ||
+    /(?:^|[\s_/-])tg(?:$|[\s_/-])/.test(raw)
+  ) {
+    return 'telegram';
+  }
+  if (
+    raw === 'x' ||
+    raw.includes('twitter') ||
+    /(?:^|[\s_/-])x(?:$|[\s_/(:-])/.test(raw)
+  ) {
+    return 'x';
+  }
+  if (raw === 'linkedin' || raw.includes('linkedin') || /linked[\s_-]*in/.test(raw)) {
+    return 'linkedin';
+  }
+  if (
+    raw === 'webtraffic' ||
+    raw === 'web-traffic' ||
+    raw === 'web_traffic' ||
+    raw.includes('traffic')
+  ) {
+    return 'webtraffic';
+  }
+
+  return null;
+}
+
+export function resolvePlatformIconKey(platform?: string, name?: string, icon?: string): string {
+  const ordered = [platform, name, icon]
+    .filter((v): v is string => typeof v === 'string' && Boolean(v.trim()))
+    .map((v) => v.toLowerCase().trim());
+
+  for (const candidate of ordered) {
+    const matched = matchSpecificPlatform(candidate);
+    if (matched) return matched;
+  }
+
+  for (const candidate of ordered) {
+    if (candidate === 'more' || candidate === 'other') return 'more';
+  }
+
+  return ordered[0] ?? '';
+}
+
+export function PlatformIcon({ platform, name, icon, size = 'md' }: PlatformIconProps) {
   const boxClass =
     size === 'xs'
       ? 'h-5 w-5 rounded-md'
@@ -26,16 +102,7 @@ export function PlatformIcon({ platform, size = 'md' }: PlatformIconProps) {
           ? 'h-6 w-6'
           : 'h-5 w-5';
 
-  const normalized = String(platform || '').toLowerCase().trim();
-  const resolved =
-    normalized === 'linkedin' || normalized.includes('linkedin')
-      ? 'linkedin'
-      : normalized === 'webtraffic' ||
-          normalized === 'web-traffic' ||
-          normalized === 'web_traffic' ||
-          normalized.includes('traffic')
-        ? 'webtraffic'
-        : normalized;
+  const resolved = resolvePlatformIconKey(String(platform || ''), name, icon);
 
   switch (resolved) {
     case 'instagram':
@@ -98,7 +165,7 @@ export function PlatformIcon({ platform, size = 'md' }: PlatformIconProps) {
     case 'x':
       return (
         <span
-          className={`${boxClass} inline-flex shrink-0 items-center justify-center bg-slate-900 text-white shadow-xs`}
+          className={`${boxClass} inline-flex shrink-0 items-center justify-center bg-slate-950 text-white shadow-xs`}
           aria-hidden="true"
         >
           <svg viewBox="0 0 24 24" fill="currentColor" className={iconClass}>
@@ -123,7 +190,22 @@ export function PlatformIcon({ platform, size = 'md' }: PlatformIconProps) {
           className={`${boxClass} inline-flex shrink-0 items-center justify-center bg-gradient-to-tr from-emerald-500 to-cyan-600 text-white shadow-xs`}
           aria-hidden="true"
         >
-          <Globe className={iconClass} />
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.1"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={iconClass}
+          >
+            <path d="M21 12.5a9 9 0 1 1-9.5-9" />
+            <path d="M3.6 9.5h8.2" />
+            <path d="M3.8 15h14.4" />
+            <path d="M11 3.5a13.5 13.5 0 0 0 0 18" />
+            <path d="M14.5 3.5H20V9" />
+            <path d="M12.5 11L20 3.5" />
+          </svg>
         </span>
       );
     case 'more':

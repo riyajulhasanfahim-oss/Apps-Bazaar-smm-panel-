@@ -10,6 +10,7 @@ import {
   Save,
   Sliders,
   Trash2,
+  Video,
 } from 'lucide-react';
 import { APP_CONFIG } from '../../config/app.config';
 import { HOW_IT_WORKS_STEPS, LANDING_FEATURES } from '../../data/mockLanding';
@@ -21,6 +22,14 @@ import type {
 } from '../../lib/firestore/collections';
 import { adminService } from '../../services/admin.service';
 import { normalizeCurrencySymbol } from '../../utils/pricing';
+import {
+  type BannerSliderItem,
+  getVideoPlatform,
+  isSupportedSliderVideoUrl,
+  isValidHttpUrl,
+  normalizeBannerSliders,
+  normalizeVideoUrl,
+} from '../../utils/bannerSliders';
 
 type SettingsTab = 'branding' | 'landing';
 
@@ -74,8 +83,9 @@ export function AdminSettingsView() {
   const [socialInstagram, setSocialInstagram] = useState('');
   const [maintenanceMode, setMaintenanceMode] = useState(false);
   const [existingDefaultSettings, setExistingDefaultSettings] = useState<Record<string, unknown>>({});
-  const [bannerImages, setBannerImages] = useState<string[]>([]);
+  const [bannerItems, setBannerItems] = useState<BannerSliderItem[]>([]);
   const [newBannerUrl, setNewBannerUrl] = useState('');
+  const [newBannerVideoUrl, setNewBannerVideoUrl] = useState('');
 
   // Landing Page CMS
   const [heroTitle, setHeroTitle] = useState('Grow Your Social Media');
@@ -137,21 +147,25 @@ export function AdminSettingsView() {
       if (sys.defaultSettings && typeof sys.defaultSettings === 'object') {
         const rawDefaults = sys.defaultSettings as Record<string, unknown>;
         setExistingDefaultSettings(rawDefaults);
-        if (Array.isArray(rawDefaults.bannerImages)) {
-          setBannerImages(
-            rawDefaults.bannerImages.filter(
-              (item): item is string => typeof item === 'string' && Boolean(item.trim())
-            )
-          );
-        }
+        setBannerItems(normalizeBannerSliders(rawDefaults));
       }
     });
   }, []);
 
   const handleAddBannerUrl = () => {
     const trimmed = newBannerUrl.trim();
-    if (!trimmed) return;
-    if (!/^https?:\/\//i.test(trimmed)) {
+    const trimmedVideo = newBannerVideoUrl.trim();
+    if (!trimmed) {
+      if (trimmedVideo) {
+        showToast({
+          title: 'Banner Image Required',
+          description: 'Please enter the banner image URL before adding a video link.',
+          tone: 'warning',
+        });
+      }
+      return;
+    }
+    if (!isValidHttpUrl(trimmed)) {
       showToast({
         title: 'Invalid Banner URL',
         description: 'Please enter a valid image URL starting with http:// or https://.',
@@ -159,7 +173,15 @@ export function AdminSettingsView() {
       });
       return;
     }
-    if (bannerImages.length >= 10) {
+    if (trimmedVideo && !isSupportedSliderVideoUrl(trimmedVideo)) {
+      showToast({
+        title: 'Invalid Video Link',
+        description: 'Only valid YouTube or Facebook video links are allowed (optional).',
+        tone: 'warning',
+      });
+      return;
+    }
+    if (bannerItems.length >= 10) {
       showToast({
         title: 'Limit Reached',
         description: 'You can add up to 10 banner slider images.',
@@ -167,14 +189,19 @@ export function AdminSettingsView() {
       });
       return;
     }
-    setBannerImages((prev) => [...prev, trimmed.slice(0, 500)]);
+    const normalizedVideo = trimmedVideo ? normalizeVideoUrl(trimmedVideo).slice(0, 500) : '';
+    setBannerItems((prev) => [
+      ...prev,
+      { imageUrl: trimmed.slice(0, 500), videoUrl: normalizedVideo },
+    ]);
     setNewBannerUrl('');
+    setNewBannerVideoUrl('');
   };
 
   const handleMoveBanner = (index: number, direction: -1 | 1) => {
     const target = index + direction;
-    if (target < 0 || target >= bannerImages.length) return;
-    setBannerImages((prev) => {
+    if (target < 0 || target >= bannerItems.length) return;
+    setBannerItems((prev) => {
       const next = [...prev];
       const [item] = next.splice(index, 1);
       next.splice(target, 0, item);
@@ -223,7 +250,17 @@ export function AdminSettingsView() {
         }));
 
       const pendingTrimmed = newBannerUrl.trim();
-      if (pendingTrimmed && !/^https?:\/\//i.test(pendingTrimmed)) {
+      const pendingVideoTrimmed = newBannerVideoUrl.trim();
+      if (pendingVideoTrimmed && !pendingTrimmed) {
+        showToast({
+          title: 'Banner Image Required',
+          description: 'Please enter a banner image URL for the new video link or clear the video field.',
+          tone: 'warning',
+        });
+        setSaving(false);
+        return;
+      }
+      if (pendingTrimmed && !isValidHttpUrl(pendingTrimmed)) {
         showToast({
           title: 'Invalid Banner URL',
           description: 'Banner image URL must start with http:// or https://.',
@@ -232,18 +269,53 @@ export function AdminSettingsView() {
         setSaving(false);
         return;
       }
+      if (pendingVideoTrimmed && !isSupportedSliderVideoUrl(pendingVideoTrimmed)) {
+        showToast({
+          title: 'Invalid Video Link',
+          description: 'New slider Video URL must be a valid YouTube or Facebook link.',
+          tone: 'warning',
+        });
+        setSaving(false);
+        return;
+      }
 
-      const combinedBanners = pendingTrimmed
-        ? [...bannerImages, pendingTrimmed]
-        : bannerImages;
-      const sanitizedBannerImages = combinedBanners
-        .map((url) => url.trim().slice(0, 500))
-        .filter((url) => /^https?:\/\//i.test(url))
+      const combinedBanners: BannerSliderItem[] = pendingTrimmed
+        ? [
+            ...bannerItems,
+            {
+              imageUrl: pendingTrimmed,
+              videoUrl: pendingVideoTrimmed ? normalizeVideoUrl(pendingVideoTrimmed) : '',
+            },
+          ]
+        : bannerItems;
+
+      for (let i = 0; i < combinedBanners.length; i++) {
+        const row = combinedBanners[i];
+        if (row.imageUrl.trim() && row.videoUrl.trim() && !isSupportedSliderVideoUrl(row.videoUrl)) {
+          showToast({
+            title: `Invalid Video Link on Slider #${i + 1}`,
+            description: 'Please enter a valid YouTube or Facebook video URL, or leave it blank.',
+            tone: 'warning',
+          });
+          setSaving(false);
+          return;
+        }
+      }
+
+      const sanitizedBannerItems = combinedBanners
+        .map((item) => ({
+          imageUrl: item.imageUrl.trim().slice(0, 500),
+          videoUrl: item.videoUrl.trim() ? normalizeVideoUrl(item.videoUrl).slice(0, 500) : '',
+        }))
+        .filter((item) => isValidHttpUrl(item.imageUrl))
         .slice(0, 10);
 
+      const sanitizedBannerImages = sanitizedBannerItems.map((item) => item.imageUrl);
+
+      setBannerItems(sanitizedBannerItems);
       if (pendingTrimmed) {
-        setBannerImages(sanitizedBannerImages);
         setNewBannerUrl('');
+        setNewBannerVideoUrl('');
       }
 
       await adminService.updateSystemSettings({
@@ -278,6 +350,11 @@ export function AdminSettingsView() {
         defaultSettings: {
           ...existingDefaultSettings,
           bannerImages: sanitizedBannerImages,
+          bannerItems: sanitizedBannerItems.map((item) =>
+            item.videoUrl
+              ? { imageUrl: item.imageUrl, videoUrl: item.videoUrl }
+              : { imageUrl: item.imageUrl }
+          ),
         },
         maintenanceMode,
         brandingConfigured: true,
@@ -535,15 +612,15 @@ export function AdminSettingsView() {
                 <div className="flex items-center gap-2">
                   <ImageIcon className="h-4 w-4 text-violet-700" />
                   <p className="text-xs font-bold uppercase tracking-wide text-violet-900">
-                    Home Page Banner Slider Images ({bannerImages.length}/10)
+                    Home Page Banner Slider Images ({bannerItems.length}/10)
                   </p>
                 </div>
                 <span className="text-[11px] text-slate-500">
-                  Displayed automatically above Popular Services
+                  Optional YouTube or Facebook video link opens when clicked
                 </span>
               </div>
 
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="grid gap-2 lg:grid-cols-12">
                 <input
                   type="url"
                   value={newBannerUrl}
@@ -554,73 +631,143 @@ export function AdminSettingsView() {
                       handleAddBannerUrl();
                     }
                   }}
-                  placeholder="https://example.com/banner-image.jpg"
-                  className="h-10 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-sm"
+                  placeholder="Banner Image URL (https://example.com/banner-image.jpg)"
+                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm lg:col-span-5"
                 />
+                <div className="relative lg:col-span-5">
+                  <Video className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="url"
+                    value={newBannerVideoUrl}
+                    onChange={(e) => setNewBannerVideoUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddBannerUrl();
+                      }
+                    }}
+                    placeholder="Optional Video URL (YouTube / Facebook link)"
+                    className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-3 text-sm"
+                  />
+                </div>
                 <button
                   type="button"
                   onClick={handleAddBannerUrl}
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 whitespace-nowrap"
+                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 whitespace-nowrap lg:col-span-2"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  <span>Add Banner URL</span>
+                  <span>Add Banner</span>
                 </button>
               </div>
 
-              {bannerImages.length > 0 && (
-                <div className="space-y-2 pt-1">
-                  {bannerImages.map((url, idx) => (
-                    <div
-                      key={idx}
-                      className="flex flex-wrap items-center gap-2.5 rounded-xl border border-slate-200 bg-white p-2"
-                    >
-                      <img
-                        src={url}
-                        alt={`Banner preview ${idx + 1}`}
-                        className="h-10 w-20 shrink-0 rounded-lg border border-slate-100 bg-slate-100 object-cover"
-                      />
-                      <input
-                        type="url"
-                        value={url}
-                        onChange={(e) =>
-                          setBannerImages((prev) =>
-                            prev.map((item, i) => (i === idx ? e.target.value : item))
-                          )
-                        }
-                        className="h-9 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs"
-                      />
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleMoveBanner(idx, -1)}
-                          disabled={idx === 0}
-                          aria-label="Move banner up"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                        >
-                          <ArrowUp className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleMoveBanner(idx, 1)}
-                          disabled={idx === bannerImages.length - 1}
-                          aria-label="Move banner down"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
-                        >
-                          <ArrowDown className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setBannerImages((prev) => prev.filter((_, i) => i !== idx))
-                          }
-                          aria-label="Remove banner image"
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+              {bannerItems.length > 0 && (
+                <div className="space-y-2.5 pt-1">
+                  {bannerItems.map((item, idx) => {
+                    const platform = item.videoUrl ? getVideoPlatform(item.videoUrl) : null;
+                    const hasInvalidVideo =
+                      Boolean(item.videoUrl.trim()) && !isSupportedSliderVideoUrl(item.videoUrl);
+
+                    return (
+                      <div
+                        key={idx}
+                        className="rounded-xl border border-slate-200 bg-white p-2.5 space-y-2"
+                      >
+                        <div className="flex flex-wrap items-center gap-2.5">
+                          <img
+                            src={item.imageUrl}
+                            alt={`Banner preview ${idx + 1}`}
+                            className="h-10 w-20 shrink-0 rounded-lg border border-slate-100 bg-slate-100 object-cover"
+                          />
+                          <div className="min-w-0 flex-1 space-y-1.5">
+                            <input
+                              type="url"
+                              value={item.imageUrl}
+                              onChange={(e) =>
+                                setBannerItems((prev) =>
+                                  prev.map((entry, i) =>
+                                    i === idx ? { ...entry, imageUrl: e.target.value } : entry
+                                  )
+                                )
+                              }
+                              aria-label={`Banner ${idx + 1} image URL`}
+                              placeholder="https://example.com/banner-image.jpg"
+                              className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-2.5 text-xs"
+                            />
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleMoveBanner(idx, -1)}
+                              disabled={idx === 0}
+                              aria-label="Move banner up"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                            >
+                              <ArrowUp className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleMoveBanner(idx, 1)}
+                              disabled={idx === bannerItems.length - 1}
+                              aria-label="Move banner down"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                            >
+                              <ArrowDown className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setBannerItems((prev) => prev.filter((_, i) => i !== idx))
+                              }
+                              aria-label="Remove banner image"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 sm:pl-[5.625rem]">
+                          <div className="relative min-w-0 flex-1">
+                            <Video className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                            <input
+                              type="url"
+                              value={item.videoUrl}
+                              onChange={(e) =>
+                                setBannerItems((prev) =>
+                                  prev.map((entry, i) =>
+                                    i === idx ? { ...entry, videoUrl: e.target.value } : entry
+                                  )
+                                )
+                              }
+                              aria-label={`Banner ${idx + 1} optional video URL`}
+                              placeholder="Optional Video URL (YouTube or Facebook link)"
+                              className={`h-8 w-full rounded-lg border pl-8 pr-2.5 text-xs ${
+                                hasInvalidVideo
+                                  ? 'border-rose-300 bg-rose-50/60 text-rose-800'
+                                  : 'border-slate-200 bg-slate-50 text-slate-700'
+                              }`}
+                            />
+                          </div>
+                          {platform && (
+                            <span
+                              className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                platform === 'youtube'
+                                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                  : 'bg-blue-50 text-blue-700 border border-blue-200'
+                              }`}
+                            >
+                              {platform === 'youtube' ? 'YouTube Video' : 'Facebook Video'}
+                            </span>
+                          )}
+                          {hasInvalidVideo && (
+                            <span className="text-[11px] font-medium text-rose-600">
+                              Enter a YouTube or Facebook link
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

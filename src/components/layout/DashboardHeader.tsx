@@ -40,16 +40,27 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   useEffect(() => {
-    function handleOutsideClick(e: MouseEvent) {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+    function handleOutsideClick(e: Event) {
+      const target = e.target as Node | null;
+      if (notifRef.current && target && !notifRef.current.contains(target)) {
         setNotifOpen(false);
       }
-      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+      if (profileRef.current && target && !profileRef.current.contains(target)) {
         setProfileOpen(false);
       }
     }
-    document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setNotifOpen(false);
+        setProfileOpen(false);
+      }
+    }
+    document.addEventListener('pointerdown', handleOutsideClick);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleOutsideClick);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   return (
@@ -130,22 +141,34 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
             </button>
 
             {notifOpen && (
-              <div className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-24px)] rounded-2xl border border-violet-100 bg-white p-3 shadow-xl shadow-violet-950/10">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                  <span className="font-display text-sm font-bold text-slate-900">
-                    Notifications
-                  </span>
+              <div
+                role="dialog"
+                aria-label="Notifications panel"
+                className="fixed inset-x-3 top-[3.85rem] z-50 mx-auto flex max-h-[min(28rem,calc(100dvh-5.5rem))] max-w-md flex-col overflow-hidden rounded-2xl border border-violet-100 bg-white p-3.5 shadow-2xl shadow-violet-950/15 ring-1 ring-slate-900/5 sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mx-0 sm:mt-2 sm:w-96 sm:max-w-[calc(100vw-2rem)]"
+              >
+                <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-display text-sm font-bold text-slate-900">
+                      Notifications
+                    </span>
+                    {unreadCount > 0 && (
+                      <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-violet-100 px-1.5 text-[11px] font-bold text-violet-700 tabular-nums">
+                        {unreadCount}
+                      </span>
+                    )}
+                  </div>
                   {unreadCount > 0 && (
                     <button
                       type="button"
                       onClick={markAllNotificationsRead}
-                      className="text-xs font-semibold text-violet-700 hover:text-violet-800"
+                      className="shrink-0 text-xs font-semibold text-violet-700 hover:text-violet-800"
                     >
                       Mark all read
                     </button>
                   )}
                 </div>
-                <div className="mt-2 max-h-72 space-y-1.5 overflow-y-auto">
+
+                <div className="mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain pr-0.5">
                   {notifications.length === 0 ? (
                     <p className="py-6 text-center text-xs text-slate-500">
                       You have no notifications yet.
@@ -186,7 +209,7 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
                               {item.timeLabel}
                             </span>
                           </div>
-                          <p className="mt-1 text-xs text-slate-600 leading-relaxed line-clamp-2">
+                          <p className="mt-1 text-xs text-slate-600 leading-relaxed line-clamp-2 break-words">
                             {item.message}
                           </p>
                         </button>
@@ -195,14 +218,14 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
                   )}
                 </div>
 
-                <div className="mt-2 border-t border-slate-100 pt-2">
+                <div className="mt-2.5 shrink-0 border-t border-slate-100 pt-2.5">
                   <button
                     type="button"
                     onClick={() => {
                       setNotifOpen(false);
                       setActiveTab('notifications');
                     }}
-                    className="w-full rounded-xl bg-violet-50 py-2 text-center text-xs font-bold text-violet-700 hover:bg-violet-100"
+                    className="w-full rounded-xl bg-violet-50 py-2 text-center text-xs font-bold text-violet-700 hover:bg-violet-100 transition-colors"
                   >
                     View All Notifications
                   </button>

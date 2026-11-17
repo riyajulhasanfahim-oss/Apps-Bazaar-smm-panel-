@@ -255,7 +255,7 @@ export function LandingPage() {
                   onClick={() => handleServicePreview(platform.id)}
                   className="group flex items-start gap-4 rounded-2xl border border-slate-200/90 bg-white p-5 text-left transition-all duration-150 hover:border-violet-300 hover:shadow-md hover:shadow-violet-950/5"
                 >
-                  <PlatformIcon platform={platform.id} size="lg" />
+                  <PlatformIcon platform={platform.id} name={platform.name} icon={platform.icon} size="lg" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="font-display text-base font-bold text-slate-900 group-hover:text-violet-700">

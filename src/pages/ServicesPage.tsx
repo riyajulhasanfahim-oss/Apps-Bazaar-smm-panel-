@@ -61,7 +61,7 @@ export function ServicesPage() {
                     : 'bg-white text-slate-700 border border-slate-200 hover:border-violet-300 hover:shadow-2xs'
                 }`}
               >
-                <PlatformIcon platform={plat.id} size="xs" />
+                <PlatformIcon platform={plat.id} name={plat.name} icon={plat.icon} size="xs" />
                 <span>{plat.shortName}</span>
               </button>
             );
@@ -104,7 +104,12 @@ export function ServicesPage() {
               <div className="flex items-start justify-between gap-2.5">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="transition-transform duration-200 group-hover:scale-105">
-                    <PlatformIcon platform={srv.categoryId} size="sm" />
+                    <PlatformIcon
+                      platform={srv.categoryId}
+                      name={platforms.find((p) => p.id === srv.categoryId)?.name}
+                      icon={platforms.find((p) => p.id === srv.categoryId)?.icon}
+                      size="sm"
+                    />
                   </span>
                   <h2 className="font-display text-xs sm:text-sm font-bold text-slate-900 leading-snug">
                     {srv.name}

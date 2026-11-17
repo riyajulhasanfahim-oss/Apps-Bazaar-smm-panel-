@@ -82,7 +82,7 @@ export function PopularServices() {
                 }`}
               >
                 <span className="transition-transform duration-200 group-hover:scale-105">
-                  <PlatformIcon platform={platform.id} size="sm" />
+                  <PlatformIcon platform={platform.id} name={platform.name} icon={platform.icon} size="sm" />
                 </span>
                 <span className="mt-1.5 w-full truncate text-center text-[10.5px] sm:text-[11px] font-semibold text-slate-800 leading-tight">
                   {platform.shortName}
@@ -101,7 +101,7 @@ export function PopularServices() {
             }`}
           >
             <span className="transition-transform duration-200 group-hover:scale-105">
-              <PlatformIcon platform={linkedinId} size="sm" />
+              <PlatformIcon platform={linkedinId} name={linkedinCategory?.name ?? 'LinkedIn'} icon={linkedinCategory?.icon} size="sm" />
             </span>
             <span className="mt-1.5 w-full truncate text-center text-[10.5px] sm:text-[11px] font-semibold text-slate-800 leading-tight">
               LinkedIn
@@ -118,7 +118,7 @@ export function PopularServices() {
             }`}
           >
             <span className="transition-transform duration-200 group-hover:scale-105">
-              <PlatformIcon platform={webTrafficId} size="sm" />
+              <PlatformIcon platform={webTrafficId} name={webTrafficCategory?.name ?? 'Web Traffic'} icon={webTrafficCategory?.icon} size="sm" />
             </span>
             <span className="mt-1.5 w-full truncate text-center text-[10.5px] sm:text-[11px] font-semibold text-slate-800 leading-tight">
               Web Traffic

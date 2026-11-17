@@ -14,6 +14,7 @@ export interface PlatformCategory {
   id: PlatformId;
   name: string;
   shortName: string;
+  icon?: string;
   description: string;
   accentColor: string;
   bgTint: string;

@@ -137,6 +137,18 @@ function DashboardShell() {
             </div>
           )}
           {renderTabContent()}
+          <footer className="mt-8 text-center text-[11px] text-slate-400">
+            Alright, Developed by (
+            <a
+              href="https://wa.me/8801884267928"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-blue-600 underline-offset-2 transition-colors hover:text-blue-700 hover:underline"
+            >
+              Apps Bazar BD
+            </a>
+            )
+          </footer>
         </main>
       </div>
 
