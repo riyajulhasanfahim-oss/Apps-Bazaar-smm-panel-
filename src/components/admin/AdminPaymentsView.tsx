@@ -11,12 +11,16 @@ import {
   type AdminPaymentItem,
 } from '../../services/adminPanel.service';
 import { StatusText } from '../common/StatusText';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 type PaymentFilterTab = 'All' | 'Pending' | 'Approved' | 'Rejected' | 'Cancelled';
 
 export function AdminPaymentsView() {
   const { firebaseUser, showToast, systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
   const [payments, setPayments] = useState<AdminPaymentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<PaymentFilterTab>('All');

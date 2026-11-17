@@ -19,6 +19,7 @@ import { useApp } from '../context/AppContext';
 import { PublicNavbar } from '../components/layout/PublicNavbar';
 import { PublicFooter } from '../components/layout/PublicFooter';
 import { PlatformIcon } from '../components/common/PlatformIcon';
+import { normalizeCurrencySymbol } from '../utils/pricing';
 
 const DEFAULT_LANDING_FAQS = [
   {
@@ -47,8 +48,8 @@ export function LandingPage() {
   const [openFaqId, setOpenFaqId] = useState<string | null>(DEFAULT_LANDING_FAQS[0].id);
 
   const brandName = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
   const currencyCode = systemSettings?.currency?.trim() || APP_CONFIG.currencyCode;
+  const currencySymbol = normalizeCurrencySymbol(systemSettings?.currencySymbol, currencyCode);
 
   const heroSubtitle =
     systemSettings?.heroSubtitle?.trim() || 'All-in-One Social Media Growth Platform';

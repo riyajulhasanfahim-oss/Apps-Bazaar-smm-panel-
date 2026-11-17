@@ -64,6 +64,14 @@ import {
   type ProviderServiceDTO,
 } from './providerAdapter';
 import { userManagementService, type ManagedUserRecord } from './userManagement.service';
+import {
+  DEFAULT_USD_TO_BDT_RATE,
+  calculateProviderServicePricing,
+  hasCorruptedCurrencySymbol,
+  isPackageService,
+  normalizeCurrencySymbol,
+  type ProviderRateCurrency,
+} from '../utils/pricing';
 
 async function getCurrencySymbol(): Promise<string> {
   const services = getFirebaseServices();
@@ -71,8 +79,8 @@ async function getCurrencySymbol(): Promise<string> {
   try {
     const snap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, 'system'));
     if (snap.exists()) {
-      const sym = (snap.data() as { currencySymbol?: string }).currencySymbol?.trim();
-      if (sym) return sym;
+      const data = snap.data() as { currencySymbol?: string; currency?: string };
+      return normalizeCurrencySymbol(data.currencySymbol, data.currency);
     }
   } catch {
     // fallback
@@ -153,6 +161,49 @@ export interface AdminServiceItem {
   status: 'active' | 'inactive';
   createdAtLabel: string;
   updatedAtLabel: string;
+}
+
+export interface ExistingServiceUpdatePreviewItem {
+  serviceId: string;
+  providerServiceId: string;
+  name: string;
+  isPackage: boolean;
+  oldCostPrice: number;
+  newCostPrice: number;
+  oldSellingPrice: number;
+  newSellingPrice: number;
+  minQuantity: number;
+  maxQuantity: number;
+  refillGuaranteed: boolean;
+  deliverySpeed: string;
+  priceChanged: boolean;
+}
+
+export interface UnavailableProviderServiceItem {
+  serviceId: string;
+  providerServiceId: string;
+  name: string;
+  status: 'active' | 'inactive';
+}
+
+export interface ExistingServicesUpdatePlan {
+  providerId: string;
+  providerCurrency: ProviderRateCurrency;
+  exchangeRateUsdToBdt: number;
+  profitPerThousand: number;
+  updates: ExistingServiceUpdatePreviewItem[];
+  unchangedCount: number;
+  newAvailableCount: number;
+  unavailableServices: UnavailableProviderServiceItem[];
+  corruptedSymbolToRepair: { from: string; to: string } | null;
+}
+
+export interface ApplyExistingServicesUpdateResult {
+  updatedCount: number;
+  unchangedCount: number;
+  newAvailableCount: number;
+  unavailableCount: number;
+  repairedCurrencySymbol: string | null;
 }
 
 export interface AdminOrderItem {
@@ -930,6 +981,8 @@ export const adminPanelService = {
     providerId: string;
     items: ProviderServiceDTO[];
     profitPerThousand: number;
+    providerCurrency?: ProviderRateCurrency;
+    exchangeRateUsdToBdt?: number;
     categories: AdminCategoryItem[];
     status?: 'active' | 'inactive';
   }): Promise<{
@@ -949,6 +1002,15 @@ export const adminPanelService = {
     if (!Number.isFinite(profit) || profit < 0) {
       throw new Error('Profit amount per 1,000 units must be 0 or a positive number.');
     }
+
+    const providerCurrency: ProviderRateCurrency =
+      input.providerCurrency === 'USD' ? 'USD' : 'BDT';
+    const exchangeRateUsdToBdt =
+      providerCurrency === 'USD'
+        ? Number(input.exchangeRateUsdToBdt) > 0
+          ? Number(input.exchangeRateUsdToBdt)
+          : DEFAULT_USD_TO_BDT_RATE
+        : 1;
 
     if (!Array.isArray(input.categories) || input.categories.length === 0) {
       throw new Error('At least one category must exist in Firestore before importing services.');
@@ -1013,11 +1075,23 @@ export const adminPanelService = {
         }
         existingDocIds.add(srvId);
 
-        const costPrice = Math.max(0, Number(Number(item.rate || 0).toFixed(4)));
-        const sellingPrice = Math.max(0, Number((costPrice + profit).toFixed(4)));
+        const { costPriceBdt, sellingPriceBdt } = calculateProviderServicePricing({
+          rawProviderRate: Number(item.rate || 0),
+          providerCurrency,
+          exchangeRateUsdToBdt,
+          profitAmount: profit,
+        });
         const minQty = Math.max(1, Math.floor(Number(item.min) || 1));
         const maxQty = Math.max(minQty, Math.floor(Number(item.max) || minQty));
-        const rawDesc = (item.description || `${item.category || 'SMM'} (${item.type || 'Default'})`)
+        const itemIsPackage = isPackageService({
+          providerType: item.type,
+          description: item.description,
+          minQuantity: minQty,
+          maxQuantity: maxQty,
+        });
+        const rawDesc = (
+          item.description || `${item.category || 'SMM'} (${item.type || 'Default'})`
+        )
           .trim()
           .slice(0, 500);
 
@@ -1029,12 +1103,17 @@ export const adminPanelService = {
           description: rawDesc,
           providerId: cleanProviderId,
           providerServiceId: cleanRemoteId,
-          costPrice,
-          sellingPrice,
+          costPrice: costPriceBdt,
+          sellingPrice: sellingPriceBdt,
           minQuantity: minQty,
           maxQuantity: maxQty,
           averageTime: '15 minutes',
-          deliverySpeed: (item.dripfeed ? 'Drip-feed Enabled' : 'Instant Delivery').slice(0, 64),
+          deliverySpeed: (itemIsPackage
+            ? 'Package Delivery'
+            : item.dripfeed
+              ? 'Drip-feed Enabled'
+              : 'Instant Delivery'
+          ).slice(0, 64),
           refillGuaranteed: Boolean(item.refill),
           status: targetStatus,
           createdAt: serverTimestamp(),
@@ -1072,6 +1151,234 @@ export const adminPanelService = {
       handleFirestoreError(
         error,
         OperationType.CREATE,
+        FIRESTORE_COLLECTIONS.services,
+        services.auth
+      );
+    }
+  },
+
+  async buildExistingServicesUpdatePlan(input: {
+    providerId: string;
+    items: ProviderServiceDTO[];
+    profitPerThousand: number;
+    providerCurrency: ProviderRateCurrency;
+    exchangeRateUsdToBdt: number;
+  }): Promise<ExistingServicesUpdatePlan> {
+    const services = getFirebaseServices();
+    if (!services) throw new Error('Firebase is not connected.');
+
+    const cleanProviderId = input.providerId.trim().slice(0, 64);
+    if (!cleanProviderId) {
+      throw new Error('Valid provider ID is required.');
+    }
+
+    const profit = Number(input.profitPerThousand);
+    if (!Number.isFinite(profit) || profit < 0) {
+      throw new Error('Profit amount per 1,000 units must be 0 or a positive number.');
+    }
+
+    const providerCurrency: ProviderRateCurrency =
+      input.providerCurrency === 'USD' ? 'USD' : 'BDT';
+    const exchangeRateUsdToBdt =
+      providerCurrency === 'USD'
+        ? Number(input.exchangeRateUsdToBdt) > 0
+          ? Number(input.exchangeRateUsdToBdt)
+          : DEFAULT_USD_TO_BDT_RATE
+        : 1;
+
+    try {
+      const [existingSnap, sysSnap] = await Promise.all([
+        getDocs(
+          query(
+            collection(services.db, FIRESTORE_COLLECTIONS.services),
+            where('providerId', '==', cleanProviderId)
+          )
+        ),
+        getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, 'system')).catch(() => null),
+      ]);
+
+      let corruptedSymbolToRepair: { from: string; to: string } | null = null;
+      if (sysSnap && sysSnap.exists()) {
+        const sysData = sysSnap.data() as { currencySymbol?: string; currency?: string };
+        if (hasCorruptedCurrencySymbol(sysData.currencySymbol, sysData.currency)) {
+          corruptedSymbolToRepair = {
+            from: String(sysData.currencySymbol || '').trim(),
+            to: normalizeCurrencySymbol(sysData.currencySymbol, sysData.currency),
+          };
+        }
+      }
+
+      const existingByRemoteId = new Map<string, FirestoreServiceDoc>();
+      for (const docSnap of existingSnap.docs) {
+        const data = docSnap.data() as FirestoreServiceDoc;
+        const remoteId = String(data.providerServiceId || '').trim();
+        if (remoteId && !existingByRemoteId.has(remoteId)) {
+          existingByRemoteId.set(remoteId, data);
+        }
+      }
+
+      const liveByRemoteId = new Map<string, ProviderServiceDTO>();
+      for (const item of input.items) {
+        const remoteId = String(item.providerServiceId || '').trim().slice(0, 64);
+        if (remoteId && !liveByRemoteId.has(remoteId)) {
+          liveByRemoteId.set(remoteId, item);
+        }
+      }
+
+      const updates: ExistingServiceUpdatePreviewItem[] = [];
+      let unchangedCount = 0;
+      let newAvailableCount = 0;
+
+      for (const [remoteId, item] of liveByRemoteId.entries()) {
+        const existing = existingByRemoteId.get(remoteId);
+        if (!existing) {
+          newAvailableCount += 1;
+          continue;
+        }
+
+        const { costPriceBdt, sellingPriceBdt } = calculateProviderServicePricing({
+          rawProviderRate: Number(item.rate || 0),
+          providerCurrency,
+          exchangeRateUsdToBdt,
+          profitAmount: profit,
+        });
+        const minQty = Math.max(1, Math.floor(Number(item.min) || 1));
+        const maxQty = Math.max(minQty, Math.floor(Number(item.max) || minQty));
+        const itemIsPackage = isPackageService({
+          serviceType: existing.serviceType,
+          providerType: item.type,
+          description: existing.description || item.description,
+          minQuantity: minQty,
+          maxQuantity: maxQty,
+        });
+        const nextDeliverySpeed = (
+          itemIsPackage
+            ? 'Package Delivery'
+            : item.dripfeed
+              ? 'Drip-feed Enabled'
+              : 'Instant Delivery'
+        ).slice(0, 64);
+        const nextRefill = Boolean(item.refill);
+
+        const oldCostPrice = Number(existing.costPrice ?? 0);
+        const oldSellingPrice = Number(existing.sellingPrice ?? 0);
+        const oldMinQty = Math.floor(Number(existing.minQuantity ?? 1));
+        const oldMaxQty = Math.floor(Number(existing.maxQuantity ?? oldMinQty));
+        const oldRefill = Boolean(existing.refillGuaranteed);
+        const oldDeliverySpeed = String(existing.deliverySpeed || '').trim();
+
+        const priceChanged =
+          Math.abs(oldCostPrice - costPriceBdt) > 0.0001 ||
+          Math.abs(oldSellingPrice - sellingPriceBdt) > 0.0001;
+        const metaChanged =
+          oldMinQty !== minQty ||
+          oldMaxQty !== maxQty ||
+          oldRefill !== nextRefill ||
+          (itemIsPackage && oldDeliverySpeed !== nextDeliverySpeed);
+
+        if (!priceChanged && !metaChanged) {
+          unchangedCount += 1;
+          continue;
+        }
+
+        updates.push({
+          serviceId: existing.id,
+          providerServiceId: remoteId,
+          name: existing.name,
+          isPackage: itemIsPackage,
+          oldCostPrice,
+          newCostPrice: costPriceBdt,
+          oldSellingPrice,
+          newSellingPrice: sellingPriceBdt,
+          minQuantity: minQty,
+          maxQuantity: maxQty,
+          refillGuaranteed: nextRefill,
+          deliverySpeed: nextDeliverySpeed,
+          priceChanged,
+        });
+      }
+
+      const unavailableServices: UnavailableProviderServiceItem[] = [];
+      for (const [remoteId, existing] of existingByRemoteId.entries()) {
+        if (!liveByRemoteId.has(remoteId)) {
+          unavailableServices.push({
+            serviceId: existing.id,
+            providerServiceId: remoteId,
+            name: existing.name,
+            status: existing.status,
+          });
+        }
+      }
+
+      return {
+        providerId: cleanProviderId,
+        providerCurrency,
+        exchangeRateUsdToBdt,
+        profitPerThousand: profit,
+        updates,
+        unchangedCount,
+        newAvailableCount,
+        unavailableServices,
+        corruptedSymbolToRepair,
+      };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.LIST,
+        FIRESTORE_COLLECTIONS.services,
+        services.auth
+      );
+    }
+  },
+
+  async applyExistingServicesUpdatePlan(
+    plan: ExistingServicesUpdatePlan
+  ): Promise<ApplyExistingServicesUpdateResult> {
+    const services = getFirebaseServices();
+    if (!services) throw new Error('Firebase is not connected.');
+
+    try {
+      const CHUNK_SIZE = 400;
+      for (let i = 0; i < plan.updates.length; i += CHUNK_SIZE) {
+        const chunk = plan.updates.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(services.db);
+        for (const item of chunk) {
+          batch.update(doc(services.db, FIRESTORE_COLLECTIONS.services, item.serviceId), {
+            costPrice: item.newCostPrice,
+            sellingPrice: item.newSellingPrice,
+            minQuantity: item.minQuantity,
+            maxQuantity: item.maxQuantity,
+            refillGuaranteed: item.refillGuaranteed,
+            deliverySpeed: item.deliverySpeed,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      }
+
+      let repairedCurrencySymbol: string | null = null;
+      if (plan.corruptedSymbolToRepair) {
+        await adminService.updateSystemSettings({
+          currencySymbol: plan.corruptedSymbolToRepair.to,
+        });
+        repairedCurrencySymbol = plan.corruptedSymbolToRepair.to;
+      }
+
+      if (plan.updates.length > 0 || repairedCurrencySymbol) {
+        invalidatePublicCatalogCache();
+      }
+
+      return {
+        updatedCount: plan.updates.length,
+        unchangedCount: plan.unchangedCount,
+        newAvailableCount: plan.newAvailableCount,
+        unavailableCount: plan.unavailableServices.length,
+        repairedCurrencySymbol,
+      };
+    } catch (error) {
+      handleFirestoreError(
+        error,
+        OperationType.UPDATE,
         FIRESTORE_COLLECTIONS.services,
         services.auth
       );

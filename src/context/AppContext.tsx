@@ -47,6 +47,11 @@ import {
 import { toUserFriendlyFirebaseError } from '../lib/firestore/errors';
 import { APP_CONFIG } from '../config/app.config';
 import {
+  calculateOrderCharge,
+  isPackageService,
+  normalizeCurrencySymbol,
+} from '../utils/pricing';
+import {
   getAdminPermissions,
   getAdminRoleLabel,
   type AdminPermissions,
@@ -320,9 +325,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     bootUser?.notifications ?? []
   );
   const [tickets, setTickets] = useState<SupportTicket[]>(bootUser?.tickets ?? []);
-  const [systemSettings, setSystemSettings] = useState<Partial<FirestoreSettingsDoc> | null>(
-    bootPublic?.systemSettings ?? null
-  );
+  const [systemSettings, setSystemSettings] = useState<Partial<FirestoreSettingsDoc> | null>(() => {
+    const raw = bootPublic?.systemSettings ?? null;
+    if (!raw) return null;
+    return {
+      ...raw,
+      currencySymbol: normalizeCurrencySymbol(raw.currencySymbol, raw.currency),
+    };
+  });
   const [dataError, setDataError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(!hasWarmPublicCache);
   const [toast, setToast] = useState<ToastMessage | null>(null);
@@ -490,7 +500,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshSystemSettings = useCallback(async () => {
     invalidatePublicCatalogCache();
-    const sys = await adminService.getSystemSettings(true);
+    const rawSys = await adminService.getSystemSettings(true);
+    const sys = rawSys
+      ? {
+          ...rawSys,
+          currencySymbol: normalizeCurrencySymbol(rawSys.currencySymbol, rawSys.currency),
+        }
+      : null;
     setSystemSettings(sys);
     warmBrandAndBannerAssets(sys);
     const currentCache = readPublicStartupCache();
@@ -534,11 +550,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       systemSettings: Partial<FirestoreSettingsDoc> | null;
       paymentMethods: PaymentMethodItem[];
     }) => {
+      const normalizedSettings = bundle.systemSettings
+        ? {
+            ...bundle.systemSettings,
+            currencySymbol: normalizeCurrencySymbol(
+              bundle.systemSettings.currencySymbol,
+              bundle.systemSettings.currency
+            ),
+          }
+        : null;
       setPlatforms(bundle.platforms);
       setServices(bundle.services);
-      setSystemSettings(bundle.systemSettings);
+      setSystemSettings(normalizedSettings);
       setPaymentMethods(bundle.paymentMethods);
-      warmBrandAndBannerAssets(bundle.systemSettings);
+      warmBrandAndBannerAssets(normalizedSettings);
 
       let resolvedPlatform: PlatformId | undefined;
       if (bundle.platforms.length > 0) {
@@ -551,7 +576,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       writePublicStartupCache({
-        systemSettings: bundle.systemSettings,
+        systemSettings: normalizedSettings,
         platforms: bundle.platforms,
         services: bundle.services,
         paymentMethods: bundle.paymentMethods,
@@ -1437,7 +1462,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
 
-      const cost = Number(((input.quantity / 1000) * targetService.ratePerThousand).toFixed(2));
+      const cost = calculateOrderCharge(
+        input.quantity,
+        targetService.ratePerThousand,
+        isPackageService(targetService)
+      );
       if (cost > wallet.balance) {
         showToast({
           title: 'Insufficient Balance',
@@ -1447,7 +1476,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
 
-      const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+      const currencySymbol = normalizeCurrencySymbol(
+        systemSettings?.currencySymbol,
+        systemSettings?.currency
+      );
       const idempotencyKey =
         input.idempotencyKey?.trim() ||
         `${10258 + Math.floor(Math.random() * 89000)}-${now.toString().slice(-4)}`;
@@ -1521,7 +1553,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
         return false;
       }
-      const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+      const currencySymbol = normalizeCurrencySymbol(
+        systemSettings?.currencySymbol,
+        systemSettings?.currency
+      );
       try {
         const created = await walletService.submitPaymentRequest({
           ...input,

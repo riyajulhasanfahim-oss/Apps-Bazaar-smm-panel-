@@ -23,6 +23,7 @@ import {
 } from '../lib/firestore/collections';
 import { OperationType, handleFirestoreError } from '../lib/firestore/errors';
 import { APP_CONFIG } from '../config/app.config';
+import { normalizeCurrencySymbol } from '../utils/pricing';
 
 async function getCurrencySymbol(): Promise<string> {
   const services = getFirebaseServices();
@@ -30,8 +31,8 @@ async function getCurrencySymbol(): Promise<string> {
   try {
     const snap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, 'system'));
     if (snap.exists()) {
-      const sym = (snap.data() as { currencySymbol?: string }).currencySymbol?.trim();
-      if (sym) return sym;
+      const data = snap.data() as { currencySymbol?: string; currency?: string };
+      return normalizeCurrencySymbol(data.currencySymbol, data.currency);
     }
   } catch {
     // fallback

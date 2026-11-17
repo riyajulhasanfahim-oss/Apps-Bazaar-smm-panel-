@@ -7,10 +7,14 @@ import {
   adminPanelService,
   type AdminTransactionItem,
 } from '../../services/adminPanel.service';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 export function AdminTransactionsView() {
   const { systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
   const [transactions, setTransactions] = useState<AdminTransactionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');

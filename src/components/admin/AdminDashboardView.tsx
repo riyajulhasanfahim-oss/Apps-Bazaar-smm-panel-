@@ -25,6 +25,7 @@ import {
 } from '../../services/adminPanel.service';
 import { StatusText } from '../common/StatusText';
 import type { AdminSectionId } from './AdminNavTypes';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 interface AdminDashboardViewProps {
   onNavigate: (section: AdminSectionId) => void;
@@ -34,7 +35,10 @@ export function AdminDashboardView({ onNavigate }: AdminDashboardViewProps) {
   const { adminPermissions, setupState, systemSettings, openSetupWizard } = useApp();
   const [snapshot, setSnapshot] = useState<AdminDashboardSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
 
   const loadSnapshot = useCallback(async () => {
     setLoading(true);

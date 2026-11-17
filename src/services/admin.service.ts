@@ -13,6 +13,7 @@ import {
   fetchPublicCatalogBundle,
   invalidatePublicCatalogCache,
 } from './firebaseDataClient';
+import { normalizeCurrencySymbol } from '../utils/pricing';
 
 const DESIGNATED_ADMIN_EMAIL = 'riyajulhasanfahim@gmail.com';
 
@@ -190,7 +191,12 @@ export const adminService = {
       const snap = await getDoc(
         doc(services.db, FIRESTORE_COLLECTIONS.settings, SETTINGS_DOC_IDS.system)
       );
-      return snap.exists() ? (snap.data() as FirestoreSettingsDoc) : null;
+      if (!snap.exists()) return null;
+      const raw = snap.data() as FirestoreSettingsDoc;
+      return {
+        ...raw,
+        currencySymbol: normalizeCurrencySymbol(raw.currencySymbol, raw.currency),
+      };
     } catch {
       return null;
     }

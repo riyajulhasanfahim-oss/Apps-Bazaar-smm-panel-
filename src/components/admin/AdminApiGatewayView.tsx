@@ -42,6 +42,7 @@ import {
   type GeneratedApiKeyResponse,
   type WebsiteInstallationItem,
 } from '../../services/apiGateway.service';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 type GatewayAdminTab =
   | 'overview'
@@ -62,7 +63,10 @@ const PERM_OPTIONS: Array<{ id: ApiKeyPermission; label: string }> = [
 
 export function AdminApiGatewayView() {
   const { systemSettings, showToast } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
 
   const [tab, setTab] = useState<GatewayAdminTab>('overview');
   const [loading, setLoading] = useState(true);

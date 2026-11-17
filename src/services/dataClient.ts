@@ -20,6 +20,7 @@ import {
   MOCK_TRANSACTIONS,
   MOCK_WALLET_SUMMARY,
 } from '../data/mockUser';
+import { calculateOrderCharge, isPackageService } from '../utils/pricing';
 
 /**
  * Abstract Data Client Contract.
@@ -60,7 +61,11 @@ class DemoDataClient implements IDataClient {
 
   async createOrder(input: CreateOrderInput, service: SmmService): Promise<OrderRecord> {
     const orderNumber = String(10258 + Math.floor(Math.random() * 900));
-    const charge = Number(((input.quantity / 1000) * service.ratePerThousand).toFixed(2));
+    const charge = calculateOrderCharge(
+      input.quantity,
+      service.ratePerThousand,
+      isPackageService(service)
+    );
     return {
       id: `ord-${orderNumber}`,
       orderNumber,

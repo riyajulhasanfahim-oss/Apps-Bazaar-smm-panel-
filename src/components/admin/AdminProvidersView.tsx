@@ -24,6 +24,8 @@ import {
   type AdminApiProviderItem,
   type AdminCategoryItem,
   type AdminServiceItem,
+  type ApplyExistingServicesUpdateResult,
+  type ExistingServicesUpdatePlan,
 } from '../../services/adminPanel.service';
 import {
   getProviderAdapter,
@@ -31,6 +33,13 @@ import {
   type ProviderServiceDTO,
 } from '../../services/providerAdapter';
 import { SERVICE_TYPE_OPTIONS, type ServiceType } from '../../types/service.types';
+import {
+  DEFAULT_USD_TO_BDT_RATE,
+  calculateProviderServicePricing,
+  isPackageService,
+  normalizeCurrencySymbol,
+  type ProviderRateCurrency,
+} from '../../utils/pricing';
 
 interface ConnectionFeedback {
   ok: boolean;
@@ -41,9 +50,9 @@ interface ConnectionFeedback {
 }
 
 export function AdminProvidersView() {
-  const { showToast, systemSettings, refreshCustomerData } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const { showToast, systemSettings, refreshCustomerData, refreshSystemSettings } = useApp();
   const currencyCode = systemSettings?.currency?.trim() || APP_CONFIG.currencyCode;
+  const currencySymbol = normalizeCurrencySymbol(systemSettings?.currencySymbol, currencyCode);
   const [providers, setProviders] = useState<AdminApiProviderItem[]>([]);
   const [services, setServices] = useState<AdminServiceItem[]>([]);
   const [categories, setCategories] = useState<AdminCategoryItem[]>([]);
@@ -81,7 +90,14 @@ export function AdminProvidersView() {
   const [importSearch, setImportSearch] = useState('');
   const [importCategoryFilter, setImportCategoryFilter] = useState('all');
   const [profitPerThousandInput, setProfitPerThousandInput] = useState('');
+  const [importProviderCurrency, setImportProviderCurrency] = useState<ProviderRateCurrency>('USD');
+  const [usdToBdtRateInput, setUsdToBdtRateInput] = useState(String(DEFAULT_USD_TO_BDT_RATE));
   const [bulkImporting, setBulkImporting] = useState(false);
+  const [preparingUpdatePlan, setPreparingUpdatePlan] = useState(false);
+  const [bulkUpdating, setBulkUpdating] = useState(false);
+  const [updatePlanModal, setUpdatePlanModal] = useState<ExistingServicesUpdatePlan | null>(null);
+  const [lastUpdateSummary, setLastUpdateSummary] =
+    useState<ApplyExistingServicesUpdateResult | null>(null);
 
   // Review-before-publish form for a single selected imported service
   const [reviewItem, setReviewItem] = useState<ProviderServiceDTO | null>(null);
@@ -129,14 +145,21 @@ export function AdminProvidersView() {
     return counts;
   }, [services]);
 
-  const mappedServiceKeysForImport = useMemo(() => {
-    if (!importProvider) return new Set<string>();
-    return new Set(
-      services
-        .filter((s) => s.providerId === importProvider.id && s.providerServiceId)
-        .map((s) => s.providerServiceId)
-    );
+  const mappedServiceByRemoteIdForImport = useMemo(() => {
+    const map = new Map<string, AdminServiceItem>();
+    if (!importProvider) return map;
+    for (const s of services) {
+      if (s.providerId === importProvider.id && s.providerServiceId) {
+        map.set(s.providerServiceId, s);
+      }
+    }
+    return map;
   }, [importProvider, services]);
+
+  const mappedServiceKeysForImport = useMemo(
+    () => new Set(mappedServiceByRemoteIdForImport.keys()),
+    [mappedServiceByRemoteIdForImport]
+  );
 
   const importCategories = useMemo(() => {
     const set = new Set<string>();
@@ -519,7 +542,31 @@ export function AdminProvidersView() {
     setImportCategoryFilter('all');
     setProfitPerThousandInput('');
     setBulkImporting(false);
+    setPreparingUpdatePlan(false);
+    setBulkUpdating(false);
+    setUpdatePlanModal(null);
+    setLastUpdateSummary(null);
     setReviewItem(null);
+
+    let savedCurrency: ProviderRateCurrency | null = null;
+    let savedUsdRate = String(DEFAULT_USD_TO_BDT_RATE);
+    try {
+      const storedCurr = localStorage.getItem(`rj_provider_currency_${prov.id}`);
+      if (storedCurr === 'USD' || storedCurr === 'BDT') {
+        savedCurrency = storedCurr;
+      }
+      const storedRate = localStorage.getItem(`rj_provider_usd_rate_${prov.id}`);
+      if (storedRate && Number(storedRate) > 0) {
+        savedUsdRate = storedRate;
+      }
+    } catch {
+      // ignore storage read issues
+    }
+    const detectedCurrency: ProviderRateCurrency =
+      savedCurrency ??
+      (prov.lastBalanceCurrency?.trim().toUpperCase() === 'BDT' ? 'BDT' : 'USD');
+    setImportProviderCurrency(detectedCurrency);
+    setUsdToBdtRateInput(savedUsdRate);
 
     try {
       const adapter = getProviderAdapter(prov.providerFormat);
@@ -545,6 +592,36 @@ export function AdminProvidersView() {
     }
   };
 
+  const handleProviderCurrencyChange = (nextCurrency: ProviderRateCurrency) => {
+    setImportProviderCurrency(nextCurrency);
+    if (!importProvider) return;
+    try {
+      localStorage.setItem(`rj_provider_currency_${importProvider.id}`, nextCurrency);
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const handleUsdToBdtRateChange = (nextValue: string) => {
+    setUsdToBdtRateInput(nextValue);
+    if (!importProvider) return;
+    const numeric = Number(nextValue);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      try {
+        localStorage.setItem(`rj_provider_usd_rate_${importProvider.id}`, String(numeric));
+      } catch {
+        // ignore storage errors
+      }
+    }
+  };
+
+  const parsedExchangeRate = useMemo(() => {
+    if (importProviderCurrency !== 'USD') return 1;
+    const val = Number(usdToBdtRateInput.trim());
+    if (!Number.isFinite(val) || val <= 0) return null;
+    return val;
+  }, [importProviderCurrency, usdToBdtRateInput]);
+
   const parsedProfitInput = useMemo(() => {
     const trimmed = profitPerThousandInput.trim();
     if (!trimmed) return null;
@@ -559,6 +636,11 @@ export function AdminProvidersView() {
     [importedList, mappedServiceKeysForImport]
   );
 
+  const existingMappedCount = useMemo(
+    () => mappedServiceKeysForImport.size,
+    [mappedServiceKeysForImport]
+  );
+
   const handleImportAllServices = async () => {
     if (!importProvider || importedList.length === 0 || bulkImporting) return;
 
@@ -566,7 +648,8 @@ export function AdminProvidersView() {
     if (!trimmedProfit) {
       showToast({
         title: 'Enter Profit Amount',
-        description: 'Please enter your desired profit amount in BDT per 1,000 units before importing.',
+        description:
+          'Please enter your desired profit amount in BDT per 1,000 units before importing.',
         tone: 'warning',
       });
       return;
@@ -577,6 +660,15 @@ export function AdminProvidersView() {
       showToast({
         title: 'Invalid Profit Amount',
         description: 'Profit per 1,000 units must be 0 or a positive BDT amount.',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    if (importProviderCurrency === 'USD' && parsedExchangeRate === null) {
+      showToast({
+        title: 'Invalid Exchange Rate',
+        description: 'Enter a valid positive USD to BDT exchange rate (e.g. 122).',
         tone: 'warning',
       });
       return;
@@ -597,6 +689,8 @@ export function AdminProvidersView() {
         providerId: importProvider.id,
         items: importedList,
         profitPerThousand: profit,
+        providerCurrency: importProviderCurrency,
+        exchangeRateUsdToBdt: parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE,
         categories,
         status: 'active',
       });
@@ -642,27 +736,140 @@ export function AdminProvidersView() {
     }
   };
 
+  const handlePrepareExistingUpdate = async () => {
+    if (!importProvider || preparingUpdatePlan || bulkUpdating) return;
+
+    const trimmedProfit = profitPerThousandInput.trim();
+    if (!trimmedProfit) {
+      showToast({
+        title: 'Enter Profit Amount',
+        description:
+          'Enter your desired BDT profit per 1,000 units before previewing existing service updates.',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    const profit = Number(trimmedProfit);
+    if (!Number.isFinite(profit) || profit < 0) {
+      showToast({
+        title: 'Invalid Profit Amount',
+        description: 'Profit must be 0 or a positive BDT amount.',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    if (importProviderCurrency === 'USD' && parsedExchangeRate === null) {
+      showToast({
+        title: 'Invalid Exchange Rate',
+        description: 'Enter a valid positive USD to BDT exchange rate (e.g. 122).',
+        tone: 'warning',
+      });
+      return;
+    }
+
+    setPreparingUpdatePlan(true);
+    try {
+      const adapter = getProviderAdapter(importProvider.providerFormat);
+      const latestItems = await adapter.getServices({
+        providerId: importProvider.id,
+        apiUrl: importProvider.apiUrl,
+        apiKey: importProvider.apiKey,
+        format: importProvider.providerFormat,
+      });
+      setImportedList(latestItems);
+
+      const plan = await adminPanelService.buildExistingServicesUpdatePlan({
+        providerId: importProvider.id,
+        items: latestItems,
+        profitPerThousand: profit,
+        providerCurrency: importProviderCurrency,
+        exchangeRateUsdToBdt: parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE,
+      });
+      setUpdatePlanModal(plan);
+    } catch (err) {
+      showToast({
+        title: 'Update Preview Failed',
+        description:
+          err instanceof Error
+            ? err.message
+            : 'Unable to fetch latest provider rates for existing services.',
+        tone: 'error',
+      });
+    } finally {
+      setPreparingUpdatePlan(false);
+    }
+  };
+
+  const handleConfirmExistingUpdate = async () => {
+    if (!updatePlanModal || bulkUpdating) return;
+
+    setBulkUpdating(true);
+    try {
+      const summary = await adminPanelService.applyExistingServicesUpdatePlan(updatePlanModal);
+      setLastUpdateSummary(summary);
+      setUpdatePlanModal(null);
+
+      await Promise.all([
+        loadData(),
+        refreshCustomerData().catch(() => undefined),
+        ...(summary.repairedCurrencySymbol
+          ? [refreshSystemSettings().catch(() => undefined)]
+          : []),
+      ]);
+
+      showToast({
+        title: `Updated ${summary.updatedCount} Existing Service${summary.updatedCount === 1 ? '' : 's'}`,
+        description: `Unchanged: ${summary.unchangedCount} · New Available: ${summary.newAvailableCount} · Unavailable: ${summary.unavailableCount}${
+          summary.repairedCurrencySymbol
+            ? ` · Currency symbol repaired to "${summary.repairedCurrencySymbol}"`
+            : ''
+        }`,
+        tone: 'success',
+      });
+    } catch (err) {
+      showToast({
+        title: 'Update Failed',
+        description:
+          err instanceof Error ? err.message : 'Unable to apply existing service price updates.',
+        tone: 'error',
+      });
+    } finally {
+      setBulkUpdating(false);
+    }
+  };
+
   const openReviewForImported = (item: ProviderServiceDTO) => {
     const resolved = resolveCategoryForImportedService(item.name, item.category, categories);
     const matchingCategory = resolved.categoryId || (categories[0]?.id ?? 'instagram');
 
-    const cost = Number(item.rate || 0);
-    const suggestedSell =
-      parsedProfitInput !== null
-        ? Number((cost + parsedProfitInput).toFixed(2))
-        : Number(cost.toFixed(2));
+    const { costPriceBdt, sellingPriceBdt } = calculateProviderServicePricing({
+      rawProviderRate: Number(item.rate || 0),
+      providerCurrency: importProviderCurrency,
+      exchangeRateUsdToBdt: parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE,
+      profitAmount: parsedProfitInput ?? 0,
+    });
+    const itemIsPackage = isPackageService({
+      providerType: item.type,
+      description: item.description,
+      minQuantity: item.min,
+      maxQuantity: item.max,
+    });
 
     setReviewItem(item);
     setRvCategoryId(matchingCategory);
     setRvServiceType(resolved.serviceType);
     setRvName(item.name.slice(0, 155));
     setRvDescription(item.description || `${item.category} (${item.type})`);
-    setRvCostPrice(cost.toFixed(2));
-    setRvSellingPrice(suggestedSell.toFixed(2));
+    setRvCostPrice(costPriceBdt.toFixed(2));
+    setRvSellingPrice(sellingPriceBdt.toFixed(2));
     setRvMinQty(String(item.min));
     setRvMaxQty(String(item.max));
     setRvAvgTime('15 minutes');
-    setRvDeliverySpeed(item.dripfeed ? 'Drip-feed Enabled' : 'Instant Delivery');
+    setRvDeliverySpeed(
+      itemIsPackage ? 'Package Delivery' : item.dripfeed ? 'Drip-feed Enabled' : 'Instant Delivery'
+    );
     setRvRefill(item.refill);
     setRvStatus('inactive'); // Safe default: Admin explicitly chooses Active vs Draft before publishing
   };
@@ -1130,7 +1337,17 @@ export function AdminProvidersView() {
                       Reviewing Provider Service #{reviewItem.providerServiceId}
                     </p>
                     <p className="text-[11px] text-violet-800">
-                      Original: {reviewItem.name} · Provider Cost: {reviewItem.rate} / 1K
+                      Original: {reviewItem.name} · Raw Rate:{' '}
+                      {importProviderCurrency === 'USD' ? '$' : currencySymbol}
+                      {Number(reviewItem.rate || 0).toFixed(4)}
+                      {isPackageService({
+                        providerType: reviewItem.type,
+                        description: reviewItem.description,
+                        minQuantity: reviewItem.min,
+                        maxQuantity: reviewItem.max,
+                      })
+                        ? ' / Pkg'
+                        : ' / 1K'}
                     </p>
                   </div>
                   <button
@@ -1221,7 +1438,7 @@ export function AdminProvidersView() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Cost Price / 1K ({APP_CONFIG.currencyCode})
+                      Cost Price ({currencyCode})
                     </label>
                     <input
                       type="number"
@@ -1235,7 +1452,7 @@ export function AdminProvidersView() {
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      Customer Selling Price / 1K ({currencyCode})
+                      Customer Selling Price ({currencyCode})
                     </label>
                     <input
                       type="number"
@@ -1250,7 +1467,7 @@ export function AdminProvidersView() {
                 </div>
 
                 <div className="rounded-xl bg-violet-50 px-3.5 py-2 text-xs font-semibold text-violet-900">
-                  Gross Margin Preview per 1,000:{' '}
+                  Gross Margin Preview:{' '}
                   <span className={reviewGrossMargin >= 0 ? 'text-emerald-700' : 'text-rose-700'}>
                     {currencySymbol}
                     {reviewGrossMargin.toFixed(2)}
@@ -1338,16 +1555,16 @@ export function AdminProvidersView() {
               <div className="flex flex-1 flex-col overflow-hidden p-5 space-y-3">
                 {!importLoading && !importError && importedList.length > 0 && (
                   <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-3.5 space-y-2.5">
-                    <div className="flex flex-col gap-2.5 sm:flex-row sm:items-end sm:justify-between">
-                      <div className="flex-1">
+                    <div className="grid gap-2.5 sm:grid-cols-12 sm:items-end">
+                      <div className="sm:col-span-5">
                         <label
                           htmlFor="import-profit-input"
                           className="block text-xs font-bold text-violet-950 mb-1"
                         >
                           Desired Profit ({currencyCode} per 1,000 units)
                         </label>
-                        <div className="relative">
-                          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500">
+                        <div className="flex h-10 w-full items-center overflow-hidden rounded-xl border border-violet-200 bg-white focus-within:border-violet-500 focus-within:ring-2 focus-within:ring-violet-500/20">
+                          <span className="flex h-full items-center border-r border-violet-100 bg-violet-50/70 px-3 text-xs font-bold text-slate-600 select-none shrink-0">
                             {currencySymbol}
                           </span>
                           <input
@@ -1358,15 +1575,64 @@ export function AdminProvidersView() {
                             value={profitPerThousandInput}
                             onChange={(e) => setProfitPerThousandInput(e.target.value)}
                             placeholder="Enter profit per 1,000 (e.g. 10)"
-                            className="h-10 w-full rounded-xl border border-violet-200 bg-white pl-7 pr-3 text-xs sm:text-sm font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                            className="h-full w-full bg-transparent px-3 text-xs sm:text-sm font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none"
                           />
                         </div>
                       </div>
+
+                      <div className="sm:col-span-3">
+                        <label
+                          htmlFor="provider-rate-currency"
+                          className="block text-xs font-bold text-violet-950 mb-1"
+                        >
+                          Provider API Rate
+                        </label>
+                        <select
+                          id="provider-rate-currency"
+                          value={importProviderCurrency}
+                          onChange={(e) =>
+                            handleProviderCurrencyChange(e.target.value as ProviderRateCurrency)
+                          }
+                          className="h-10 w-full rounded-xl border border-violet-200 bg-white px-2.5 text-xs font-semibold text-slate-900 focus:border-violet-500 focus:outline-none"
+                        >
+                          <option value="USD">USD ($ → {currencyCode})</option>
+                          <option value="BDT">BDT ({currencySymbol} Direct)</option>
+                        </select>
+                      </div>
+
+                      {importProviderCurrency === 'USD' && (
+                        <div className="sm:col-span-4">
+                          <label
+                            htmlFor="usd-bdt-rate-input"
+                            className="block text-xs font-bold text-violet-950 mb-1"
+                          >
+                            1 USD Rate ({currencyCode})
+                          </label>
+                          <div className="flex h-10 w-full items-center overflow-hidden rounded-xl border border-violet-200 bg-white focus-within:border-violet-500 focus-within:ring-2 focus-within:ring-violet-500/20">
+                            <span className="flex h-full items-center border-r border-violet-100 bg-violet-50/70 px-3 text-xs font-bold text-slate-600 select-none shrink-0">
+                              {currencySymbol}
+                            </span>
+                            <input
+                              id="usd-bdt-rate-input"
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              value={usdToBdtRateInput}
+                              onChange={(e) => handleUsdToBdtRateChange(e.target.value)}
+                              placeholder="122"
+                              className="h-full w-full bg-transparent px-3 text-xs sm:text-sm font-semibold text-slate-900 tabular-nums focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                       <button
                         type="button"
                         disabled={bulkImporting || newImportableCount === 0}
                         onClick={handleImportAllServices}
-                        className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-60 shrink-0"
+                        className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 disabled:cursor-not-allowed disabled:opacity-60"
                       >
                         {bulkImporting ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1381,25 +1647,77 @@ export function AdminProvidersView() {
                               }`}
                         </span>
                       </button>
+
+                      <button
+                        type="button"
+                        disabled={
+                          preparingUpdatePlan ||
+                          bulkUpdating ||
+                          bulkImporting ||
+                          existingMappedCount === 0
+                        }
+                        onClick={handlePrepareExistingUpdate}
+                        className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-xl border border-violet-300 bg-white px-4 text-xs font-bold text-violet-900 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {preparingUpdatePlan ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        <span>
+                          {preparingUpdatePlan
+                            ? 'Checking Latest Rates...'
+                            : `Update Existing Services${
+                                existingMappedCount > 0 ? ` (${existingMappedCount})` : ''
+                              }`}
+                        </span>
+                      </button>
                     </div>
+
                     <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-violet-900">
                       <span>
                         Formula:{' '}
                         <span className="font-semibold">
-                          Customer Price = Provider Cost + Profit
+                          {importProviderCurrency === 'USD'
+                            ? `Customer Price = (Provider USD × ${parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE}) + Profit`
+                            : 'Customer Price = Provider Cost + Profit'}
                         </span>
                         {parsedProfitInput !== null && (
                           <span className="ml-1.5 text-emerald-700 font-semibold">
-                            (e.g. {currencySymbol}50 + {currencySymbol}
-                            {parsedProfitInput.toFixed(2)} = {currencySymbol}
-                            {(50 + parsedProfitInput).toFixed(2)} / 1K)
+                            {importProviderCurrency === 'USD'
+                              ? `(e.g. $0.50 × ${parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE} + ${currencySymbol}${parsedProfitInput.toFixed(2)} = ${currencySymbol}${(
+                                  0.5 * (parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE) +
+                                  parsedProfitInput
+                                ).toFixed(2)})`
+                              : `(e.g. ${currencySymbol}50 + ${currencySymbol}${parsedProfitInput.toFixed(2)} = ${currencySymbol}${(50 + parsedProfitInput).toFixed(2)})`}
                           </span>
                         )}
                       </span>
                       <span className="text-slate-600 font-medium">
-                        {newImportableCount} new · {importedList.length - newImportableCount} already imported
+                        {newImportableCount} new · {existingMappedCount} already imported
                       </span>
                     </div>
+
+                    {lastUpdateSummary && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-950">
+                        <span className="font-semibold">
+                          Last Update: {lastUpdateSummary.updatedCount} updated ·{' '}
+                          {lastUpdateSummary.unchangedCount} unchanged ·{' '}
+                          {lastUpdateSummary.newAvailableCount} new ·{' '}
+                          {lastUpdateSummary.unavailableCount} unavailable
+                          {lastUpdateSummary.repairedCurrencySymbol
+                            ? ` · Symbol cleaned to "${lastUpdateSummary.repairedCurrencySymbol}"`
+                            : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setLastUpdateSummary(null)}
+                          className="font-semibold text-emerald-800 underline underline-offset-2"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1452,16 +1770,29 @@ export function AdminProvidersView() {
                 ) : (
                   <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-200/80 divide-y divide-slate-100">
                     {filteredImported.slice(0, 150).map((item) => {
-                      const alreadyMapped = mappedServiceKeysForImport.has(item.providerServiceId);
+                      const existingSaved = mappedServiceByRemoteIdForImport.get(
+                        item.providerServiceId
+                      );
+                      const alreadyMapped = Boolean(existingSaved);
                       const autoMatch = resolveCategoryForImportedService(
                         item.name,
                         item.category,
                         categories
                       );
-                      const customerRate =
-                        parsedProfitInput !== null
-                          ? Number((Number(item.rate || 0) + parsedProfitInput).toFixed(2))
-                          : null;
+                      const itemIsPackage = isPackageService({
+                        providerType: item.type,
+                        description: item.description,
+                        minQuantity: item.min,
+                        maxQuantity: item.max,
+                      });
+                      const unitSuffix = itemIsPackage ? '/Pkg' : '/1K';
+                      const { costPriceBdt, sellingPriceBdt } = calculateProviderServicePricing({
+                        rawProviderRate: Number(item.rate || 0),
+                        providerCurrency: importProviderCurrency,
+                        exchangeRateUsdToBdt: parsedExchangeRate ?? DEFAULT_USD_TO_BDT_RATE,
+                        profitAmount: parsedProfitInput ?? 0,
+                      });
+                      const customerRate = parsedProfitInput !== null ? sellingPriceBdt : null;
                       return (
                         <div
                           key={item.providerServiceId}
@@ -1478,6 +1809,11 @@ export function AdminProvidersView() {
                               <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
                                 Auto: {autoMatch.categoryName}
                               </span>
+                              {itemIsPackage && (
+                                <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
+                                  Package
+                                </span>
+                              )}
                               {item.refill && (
                                 <span className="rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                                   Refill
@@ -1495,19 +1831,32 @@ export function AdminProvidersView() {
                             <p className="text-[11px] text-slate-500 tabular-nums">
                               Provider Cost:{' '}
                               <span className="font-semibold">
-                                {currencySymbol}
-                                {Number(item.rate || 0).toFixed(2)}/1K
+                                {importProviderCurrency === 'USD'
+                                  ? `$${Number(item.rate || 0).toFixed(4)} (${currencySymbol}${costPriceBdt.toFixed(2)}${unitSuffix})`
+                                  : `${currencySymbol}${costPriceBdt.toFixed(2)}${unitSuffix}`}
                               </span>
                               {customerRate !== null && (
                                 <>
                                   {' · '}Customer Price:{' '}
                                   <span className="font-bold text-emerald-700">
                                     {currencySymbol}
-                                    {customerRate.toFixed(2)}/1K
+                                    {customerRate.toFixed(2)}
+                                    {unitSuffix}
                                   </span>
                                 </>
                               )}
-                              {' · '}Min {item.min.toLocaleString()} – Max {item.max.toLocaleString()}
+                              {existingSaved && (
+                                <>
+                                  {' · '}Saved:{' '}
+                                  <span className="font-semibold text-slate-700">
+                                    {currencySymbol}
+                                    {existingSaved.sellingPrice.toFixed(2)}
+                                    {unitSuffix}
+                                  </span>
+                                </>
+                              )}
+                              {' · '}Min {item.min.toLocaleString()} – Max{' '}
+                              {item.max.toLocaleString()}
                             </p>
                           </div>
 
@@ -1541,6 +1890,191 @@ export function AdminProvidersView() {
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Mandatory Preview & Confirmation Modal for Updating Existing Services */}
+      {updatePlanModal && importProvider && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 p-3 sm:p-4 backdrop-blur-xs">
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div className="min-w-0">
+                <h3 className="font-display text-base sm:text-lg font-bold text-slate-950 truncate">
+                  Confirm Existing Service Price Update
+                </h3>
+                <p className="text-[11px] sm:text-xs text-slate-500">
+                  {importProvider.name} ·{' '}
+                  {updatePlanModal.providerCurrency === 'USD'
+                    ? `(${updatePlanModal.providerCurrency} × ${updatePlanModal.exchangeRateUsdToBdt}) + ${currencySymbol}${updatePlanModal.profitPerThousand.toFixed(2)}`
+                    : `BDT Cost + ${currencySymbol}${updatePlanModal.profitPerThousand.toFixed(2)}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={bulkUpdating}
+                onClick={() => setUpdatePlanModal(null)}
+                className="flex h-8 w-8 items-center justify-center rounded-xl text-slate-400 hover:bg-slate-100 disabled:opacity-50"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-3">
+                  <p className="text-[11px] font-medium text-violet-700">To Update</p>
+                  <p className="mt-0.5 font-display text-lg font-extrabold text-violet-950 tabular-nums">
+                    {updatePlanModal.updates.length}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-[11px] font-medium text-slate-500">Unchanged</p>
+                  <p className="mt-0.5 font-display text-lg font-extrabold text-slate-800 tabular-nums">
+                    {updatePlanModal.unchangedCount}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3">
+                  <p className="text-[11px] font-medium text-emerald-700">New (Not Modified)</p>
+                  <p className="mt-0.5 font-display text-lg font-extrabold text-emerald-900 tabular-nums">
+                    {updatePlanModal.newAvailableCount}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3">
+                  <p className="text-[11px] font-medium text-amber-800">Unavailable</p>
+                  <p className="mt-0.5 font-display text-lg font-extrabold text-amber-950 tabular-nums">
+                    {updatePlanModal.unavailableServices.length}
+                  </p>
+                </div>
+              </div>
+
+              {updatePlanModal.corruptedSymbolToRepair && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-950">
+                  <span className="font-bold">Display Symbol Repair:</span> Stored system currency symbol{' '}
+                  <code className="font-mono font-bold">
+                    &ldquo;{updatePlanModal.corruptedSymbolToRepair.from}&rdquo;
+                  </code>{' '}
+                  will also be cleaned to{' '}
+                  <code className="font-mono font-bold">
+                    &ldquo;{updatePlanModal.corruptedSymbolToRepair.to}&rdquo;
+                  </code>{' '}
+                  so customer prices display accurately.
+                </div>
+              )}
+
+              {updatePlanModal.updates.length > 0 ? (
+                <div className="overflow-hidden rounded-2xl border border-slate-200/80 divide-y divide-slate-100">
+                  <div className="bg-slate-50 px-3.5 py-2 text-[11px] font-bold text-slate-600 flex items-center justify-between">
+                    <span>Old Price vs New Price Preview</span>
+                    <span>
+                      Showing {Math.min(120, updatePlanModal.updates.length)} of{' '}
+                      {updatePlanModal.updates.length}
+                    </span>
+                  </div>
+                  <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+                    {updatePlanModal.updates.slice(0, 120).map((row) => {
+                      const suffix = row.isPackage ? '/Pkg' : '/1K';
+                      return (
+                        <div
+                          key={row.serviceId}
+                          className="flex flex-col gap-1.5 px-3.5 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-700">
+                                #{row.providerServiceId}
+                              </span>
+                              {row.isPackage && (
+                                <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
+                                  Package
+                                </span>
+                              )}
+                              <p className="font-semibold text-slate-900 truncate">{row.name}</p>
+                            </div>
+                            <p className="mt-0.5 text-[11px] text-slate-500 tabular-nums">
+                              Cost: {currencySymbol}
+                              {row.oldCostPrice.toFixed(2)} →{' '}
+                              <span className="font-semibold text-slate-800">
+                                {currencySymbol}
+                                {row.newCostPrice.toFixed(2)}
+                                {suffix}
+                              </span>
+                            </p>
+                          </div>
+
+                          <div className="text-left sm:text-right tabular-nums shrink-0">
+                            <p className="text-[11px] text-slate-400 line-through">
+                              {currencySymbol}
+                              {row.oldSellingPrice.toFixed(2)}
+                              {suffix}
+                            </p>
+                            <p className="font-bold text-violet-800">
+                              {currencySymbol}
+                              {row.newSellingPrice.toFixed(2)}
+                              {suffix}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-center text-xs text-slate-600">
+                  All {updatePlanModal.unchangedCount} matched services already match the latest provider rates and profit settings. No service changes are needed.
+                </div>
+              )}
+
+              {updatePlanModal.unavailableServices.length > 0 && (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3 text-[11px] text-slate-600 space-y-1">
+                  <p className="font-bold text-slate-800">
+                    Unavailable on Provider ({updatePlanModal.unavailableServices.length}):
+                  </p>
+                  <p>
+                    {updatePlanModal.unavailableServices
+                      .slice(0, 8)
+                      .map((u) => `#${u.providerServiceId} ${u.name}`)
+                      .join(', ')}
+                    {updatePlanModal.unavailableServices.length > 8
+                      ? ` ...and ${updatePlanModal.unavailableServices.length - 8} more`
+                      : ''}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-5 py-3.5">
+              <span className="text-[11px] text-slate-500">
+                Matches strictly by provider service ID. Existing orders stay unchanged.
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={bulkUpdating}
+                  onClick={() => setUpdatePlanModal(null)}
+                  className="h-9 rounded-xl border border-slate-200 px-4 text-xs font-semibold text-slate-700 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                {(updatePlanModal.updates.length > 0 || updatePlanModal.corruptedSymbolToRepair) && (
+                  <button
+                    type="button"
+                    disabled={bulkUpdating}
+                    onClick={handleConfirmExistingUpdate}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-violet-700 px-4 text-xs font-bold text-white hover:bg-violet-800 disabled:opacity-60"
+                  >
+                    {bulkUpdating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    <span>
+                      {bulkUpdating
+                        ? 'Applying Updates...'
+                        : updatePlanModal.updates.length > 0
+                          ? `Confirm & Update ${updatePlanModal.updates.length} Services`
+                          : 'Repair Currency Symbol'}
+                    </span>
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

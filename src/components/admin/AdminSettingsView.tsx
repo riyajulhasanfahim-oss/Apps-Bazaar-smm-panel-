@@ -20,6 +20,7 @@ import type {
   SettingsLandingFeatureItem,
 } from '../../lib/firestore/collections';
 import { adminService } from '../../services/admin.service';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 type SettingsTab = 'branding' | 'landing';
 
@@ -100,7 +101,9 @@ export function AdminSettingsView() {
       if (sys.themeColor) setThemeColor(sys.themeColor);
       if (sys.secondaryColor) setSecondaryColor(sys.secondaryColor);
       if (sys.currency) setCurrencyCode(sys.currency);
-      if (sys.currencySymbol) setCurrencySymbol(sys.currencySymbol);
+      if (sys.currencySymbol || sys.currency) {
+        setCurrencySymbol(normalizeCurrencySymbol(sys.currencySymbol, sys.currency));
+      }
       if (typeof sys.defaultProfitMargin === 'number') {
         setDefaultProfitMargin(sys.defaultProfitMargin);
       }
@@ -252,7 +255,10 @@ export function AdminSettingsView() {
         themeColor: themeColor.trim() || '#6D28D9',
         secondaryColor: secondaryColor.trim() || '#4F46E5',
         currency: currencyCode.trim() || APP_CONFIG.currencyCode,
-        currencySymbol: currencySymbol.trim() || APP_CONFIG.currencySymbol,
+        currencySymbol: normalizeCurrencySymbol(
+          currencySymbol,
+          currencyCode.trim() || APP_CONFIG.currencyCode
+        ),
         defaultProfitMargin: Math.max(0, Math.min(500, Number(defaultProfitMargin) || 0)),
         autoSyncEnabled,
         supportEmail: supportEmail.trim(),

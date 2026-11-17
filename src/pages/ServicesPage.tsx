@@ -4,10 +4,14 @@ import { APP_CONFIG } from '../config/app.config';
 import { useApp } from '../context/AppContext';
 import type { PlatformId } from '../types';
 import { PlatformIcon } from '../components/common/PlatformIcon';
+import { isPackageService, normalizeCurrencySymbol } from '../utils/pricing';
 
 export function ServicesPage() {
   const { platforms, services, selectPlatformForOrder, isLoading, systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
   const [filterPlatform, setFilterPlatform] = useState<'all' | PlatformId>('all');
   const [search, setSearch] = useState('');
 
@@ -108,7 +112,7 @@ export function ServicesPage() {
                 </div>
                 <span className="font-mono text-xs sm:text-sm font-extrabold text-violet-800 whitespace-nowrap tabular-nums shrink-0">
                   {currencySymbol}
-                  {srv.ratePerThousand.toFixed(2)} / 1K
+                  {srv.ratePerThousand.toFixed(2)} / {isPackageService(srv) ? 'Pkg' : '1K'}
                 </span>
               </div>
 

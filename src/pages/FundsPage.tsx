@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { APP_CONFIG } from '../config/app.config';
 import { useApp } from '../context/AppContext';
+import { normalizeCurrencySymbol } from '../utils/pricing';
 import { StatusText } from '../components/common/StatusText';
 
 const QUICK_AMOUNTS = [250, 500, 1000, 2500];
@@ -34,8 +35,8 @@ export function FundsPage() {
     systemSettings,
   } = useApp();
 
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
   const currencyCode = systemSettings?.currency?.trim() || APP_CONFIG.currencyCode;
+  const currencySymbol = normalizeCurrencySymbol(systemSettings?.currencySymbol, currencyCode);
 
   const [selectedMethodId, setSelectedMethodId] = useState<string>('');
   const [amountInput, setAmountInput] = useState('500');

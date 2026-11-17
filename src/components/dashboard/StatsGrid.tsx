@@ -3,10 +3,14 @@ import { Wallet, ShoppingCart, Check, Clock, ArrowRight } from 'lucide-react';
 import { APP_CONFIG } from '../../config/app.config';
 import { useApp } from '../../context/AppContext';
 import { StatCard } from '../common/StatCard';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 export function StatsGrid() {
   const { wallet, orderStats, navigateProtected, isLoading, platforms, systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
 
   if (isLoading && platforms.length === 0) {
     return (

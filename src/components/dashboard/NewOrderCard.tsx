@@ -15,6 +15,11 @@ import { APP_CONFIG } from '../../config/app.config';
 import { useApp } from '../../context/AppContext';
 import type { PlatformId } from '../../types';
 import { PlatformIcon } from '../common/PlatformIcon';
+import {
+  calculateOrderCharge,
+  isPackageService,
+  normalizeCurrencySymbol,
+} from '../../utils/pricing';
 
 const QUANTITY_PRESETS = [
   { label: '250', value: 250 },
@@ -40,7 +45,10 @@ export function NewOrderCard() {
     systemSettings,
   } = useApp();
 
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
 
   const categoryServices = useMemo(
     () => services.filter((s) => s.categoryId === selectedPlatform),
@@ -131,7 +139,8 @@ export function NewOrderCard() {
 
   const numericQuantity = Math.max(0, Math.floor(Number(quantityInput) || 0));
   const serviceRate = activeService?.ratePerThousand ?? 0;
-  const totalCost = Number(((numericQuantity / 1000) * serviceRate).toFixed(2));
+  const activeIsPackage = isPackageService(activeService);
+  const totalCost = calculateOrderCharge(numericQuantity, serviceRate, activeIsPackage);
   const outOfRange =
     Boolean(activeService) &&
     (numericQuantity < activeService.minQuantity || numericQuantity > activeService.maxQuantity);
@@ -273,7 +282,7 @@ export function NewOrderCard() {
                     categoryServices.map((srv) => (
                       <option key={srv.id} value={srv.id}>
                         {srv.name} ({currencySymbol}
-                        {srv.ratePerThousand.toFixed(2)}/1K)
+                        {srv.ratePerThousand.toFixed(2)}/{isPackageService(srv) ? 'Pkg' : '1K'})
                       </option>
                     ))
                   )}
@@ -426,7 +435,9 @@ export function NewOrderCard() {
                   </span>
                 </div>
                 <div>
-                  <span className="block text-slate-400">Rate / 1K</span>
+                  <span className="block text-slate-400">
+                    {activeIsPackage ? 'Price / Pkg' : 'Rate / 1K'}
+                  </span>
                     <span className="font-bold text-violet-700 tabular-nums">
                     {currencySymbol}
                     {activeService.ratePerThousand.toFixed(2)}
@@ -469,7 +480,9 @@ export function NewOrderCard() {
           <div className="flex flex-col gap-2.5 rounded-xl border border-violet-100 bg-violet-50/50 p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="grid grid-cols-2 divide-x divide-violet-200/80 sm:flex sm:items-center sm:gap-6 sm:divide-x-0">
               <div className="pr-3 sm:pr-0">
-                <p className="text-[11px] font-medium text-slate-500">Service Price</p>
+                <p className="text-[11px] font-medium text-slate-500">
+                  {activeIsPackage ? 'Package Price' : 'Service Price'}
+                </p>
                 <p className="mt-0.5 font-display text-base sm:text-lg font-extrabold text-slate-900 tabular-nums">
                   {currencySymbol} {serviceRate.toFixed(2)}
                 </p>

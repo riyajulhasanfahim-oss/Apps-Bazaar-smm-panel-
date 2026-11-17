@@ -14,6 +14,7 @@ import { DASHBOARD_NAV_ITEMS, type DashboardTab } from '../../config/navigation.
 import { APP_CONFIG } from '../../config/app.config';
 import { useApp } from '../../context/AppContext';
 import { BrandLogo } from '../common/BrandLogo';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 const ICON_MAP: Record<DashboardTab, React.ReactNode> = {
   home: <Home className="h-4 w-4" />,
@@ -28,7 +29,10 @@ const ICON_MAP: Record<DashboardTab, React.ReactNode> = {
 
 export function DashboardSidebar() {
   const { activeTab, navigateProtected, openAuthModal, firebaseUser, wallet, systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
 
   return (
     <aside className="hidden lg:flex lg:w-64 lg:shrink-0 lg:flex-col lg:border-r lg:border-violet-100 lg:bg-white">

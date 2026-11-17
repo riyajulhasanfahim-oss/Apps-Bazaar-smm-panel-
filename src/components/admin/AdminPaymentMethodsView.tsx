@@ -13,10 +13,14 @@ import {
   adminPanelService,
   type AdminPaymentMethodItem,
 } from '../../services/adminPanel.service';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 export function AdminPaymentMethodsView() {
   const { showToast, refreshWalletLedger, systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
   const [methods, setMethods] = useState<AdminPaymentMethodItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);

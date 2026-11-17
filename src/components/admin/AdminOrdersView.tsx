@@ -19,6 +19,7 @@ import {
   type AdminOrderItem,
 } from '../../services/adminPanel.service';
 import { StatusText } from '../common/StatusText';
+import { normalizeCurrencySymbol } from '../../utils/pricing';
 
 const ORDER_STATUSES: Array<'All' | OrderStatusFirestore> = [
   'All',
@@ -35,7 +36,10 @@ const PAGE_SIZE = 15;
 
 export function AdminOrdersView() {
   const { firebaseUser, showToast, adminPermissions, systemSettings } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
   const canEditOrders = adminPermissions.canEditOrders;
   const canRefundOrders = adminPermissions.canEditUsers;
   const [orders, setOrders] = useState<AdminOrderItem[]>([]);

@@ -33,6 +33,7 @@ import {
   type GeneratedApiKeyResponse,
   DEFAULT_GATEWAY_SETTINGS,
 } from '../services/apiGateway.service';
+import { normalizeCurrencySymbol } from '../utils/pricing';
 
 type ApiSubTab = 'overview' | 'keys' | 'docs' | 'balance' | 'orders' | 'logs';
 type CodeLang = 'curl' | 'javascript' | 'php';
@@ -46,8 +47,8 @@ const PERMISSION_OPTIONS: Array<{ id: ApiKeyPermission; label: string }> = [
 
 export function ApiDashboardPage() {
   const { firebaseUser, profile, systemSettings, showToast } = useApp();
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
   const currencyCode = systemSettings?.currency?.trim() || APP_CONFIG.currencyCode;
+  const currencySymbol = normalizeCurrencySymbol(systemSettings?.currencySymbol, currencyCode);
   const brandName = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
 
   const [subTab, setSubTab] = useState<ApiSubTab>('overview');

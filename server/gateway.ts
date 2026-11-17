@@ -1290,10 +1290,17 @@ export function registerGatewayRoutes(app: Express, deps: GatewayDeps): void {
         return;
       }
 
-      // Calculate price with optional customer discount
+      // Calculate price with optional customer discount (respecting Package vs per-1K pricing)
       const discountPct = Math.max(0, Math.min(90, Number(customerDoc.customDiscountPercent || 0)));
       const unitRate = Number(srv.sellingPrice ?? 0) * (1 - discountPct / 100);
-      const charge = Number(((quantity / 1000) * unitRate).toFixed(2));
+      const isPkgService =
+        /^package$/i.test(String(srv.serviceType || '').trim()) ||
+        /\bpackage\b/i.test(String(srv.deliverySpeed || '')) ||
+        /\(\s*package\s*\)/i.test(String(srv.description || '')) ||
+        (minQty === 1 && maxQty === 1);
+      const charge = isPkgService
+        ? Number((quantity * unitRate).toFixed(2))
+        : Number(((quantity / 1000) * unitRate).toFixed(2));
 
       // Atomic Firestore transaction: re-read customer with updateTime precondition & deduct
       const latestCust = await getDocRawWithToken(

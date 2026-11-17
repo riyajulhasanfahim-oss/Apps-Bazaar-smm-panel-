@@ -20,9 +20,12 @@ import {
   type AdminServiceItem,
 } from '../../services/adminPanel.service';
 import { SERVICE_TYPE_OPTIONS, type ServiceType } from '../../types/service.types';
+import { isPackageService, normalizeCurrencySymbol } from '../../utils/pricing';
 
 export function AdminServicesView() {
-  const { showToast, refreshCustomerData } = useApp();
+  const { showToast, refreshCustomerData, systemSettings } = useApp();
+  const currencyCode = systemSettings?.currency?.trim() || APP_CONFIG.currencyCode;
+  const currencySymbol = normalizeCurrencySymbol(systemSettings?.currencySymbol, currencyCode);
   const [services, setServices] = useState<AdminServiceItem[]>([]);
   const [categories, setCategories] = useState<AdminCategoryItem[]>([]);
   const [providers, setProviders] = useState<AdminApiProviderItem[]>([]);
@@ -226,9 +229,9 @@ export function AdminServicesView() {
       });
       showToast({
         title: editing ? 'Service Updated' : 'Service Added',
-        description: `${name} saved with selling price ${APP_CONFIG.currencySymbol}${Number(
+        description: `${name} saved with selling price ${currencySymbol}${Number(
           sellingPrice
-        ).toFixed(2)}/1K.`,
+        ).toFixed(2)}/${isPackageService({ serviceType, deliverySpeed, description, minQuantity: Number(minQuantity), maxQuantity: Number(maxQuantity) }) ? 'Pkg' : '1K'}.`,
         tone: 'success',
       });
       setModalOpen(false);
@@ -609,12 +612,14 @@ export function AdminServicesView() {
                     )}
                   </td>
                   <td className="px-3 py-3.5 font-mono text-slate-600 tabular-nums">
-                    {APP_CONFIG.currencySymbol}
+                    {currencySymbol}
                     {srv.costPrice.toFixed(2)}
+                    {isPackageService(srv) ? ' /Pkg' : ''}
                   </td>
                   <td className="px-3 py-3.5 font-bold text-violet-700 tabular-nums">
-                    {APP_CONFIG.currencySymbol}
+                    {currencySymbol}
                     {srv.sellingPrice.toFixed(2)}
+                    {isPackageService(srv) ? ' /Pkg' : ''}
                   </td>
                   <td
                     className={`px-3 py-3.5 font-mono font-bold tabular-nums ${
@@ -622,7 +627,7 @@ export function AdminServicesView() {
                     }`}
                   >
                     {rowMargin >= 0 ? '+' : ''}
-                    {APP_CONFIG.currencySymbol}
+                    {currencySymbol}
                     {rowMargin.toFixed(2)}
                   </td>
                   <td className="px-3 py-3.5 text-slate-500 tabular-nums">
@@ -729,16 +734,20 @@ export function AdminServicesView() {
               </div>
               <div className="grid grid-cols-4 gap-2 rounded-xl bg-slate-50 p-2.5 text-xs">
                 <div>
-                  <p className="text-[10px] text-slate-400">Cost/1K</p>
+                  <p className="text-[10px] text-slate-400">
+                    {isPackageService(srv) ? 'Cost/Pkg' : 'Cost/1K'}
+                  </p>
                   <p className="font-bold text-slate-700">
-                    {APP_CONFIG.currencySymbol}
+                    {currencySymbol}
                     {srv.costPrice.toFixed(2)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-[10px] text-slate-400">Sell/1K</p>
+                  <p className="text-[10px] text-slate-400">
+                    {isPackageService(srv) ? 'Sell/Pkg' : 'Sell/1K'}
+                  </p>
                   <p className="font-bold text-violet-700">
-                    {APP_CONFIG.currencySymbol}
+                    {currencySymbol}
                     {srv.sellingPrice.toFixed(2)}
                   </p>
                 </div>
@@ -749,7 +758,7 @@ export function AdminServicesView() {
                       rowMargin >= 0 ? 'text-emerald-700' : 'text-rose-700'
                     }`}
                   >
-                    {APP_CONFIG.currencySymbol}
+                    {currencySymbol}
                     {rowMargin.toFixed(2)}
                   </p>
                 </div>
@@ -955,7 +964,7 @@ export function AdminServicesView() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Cost Price / 1K ({APP_CONFIG.currencyCode})
+                    Cost Price ({currencyCode})
                   </label>
                   <input
                     type="number"
@@ -969,7 +978,7 @@ export function AdminServicesView() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Customer Selling Price / 1K ({APP_CONFIG.currencyCode})
+                    Customer Selling Price ({currencyCode})
                   </label>
                   <input
                     type="number"
@@ -984,9 +993,9 @@ export function AdminServicesView() {
               </div>
 
               <div className="rounded-xl bg-violet-50 px-3.5 py-2 text-xs font-semibold text-violet-900">
-                Gross Margin Preview per 1,000:{' '}
+                Gross Margin Preview:{' '}
                 <span className={margin >= 0 ? 'text-emerald-700' : 'text-rose-700'}>
-                  {APP_CONFIG.currencySymbol}
+                  {currencySymbol}
                   {margin.toFixed(2)}
                 </span>{' '}
                 <span className="font-normal text-slate-500">

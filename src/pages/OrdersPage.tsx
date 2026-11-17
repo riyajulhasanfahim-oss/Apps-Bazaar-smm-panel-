@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { APP_CONFIG } from '../config/app.config';
 import { useApp } from '../context/AppContext';
+import { normalizeCurrencySymbol } from '../utils/pricing';
 import type { OrderStatus } from '../types';
 import { PlatformIcon } from '../components/common/PlatformIcon';
 import { StatusText } from '../components/common/StatusText';
@@ -77,7 +78,10 @@ export function OrdersPage() {
     systemSettings,
   } = useApp();
 
-  const currencySymbol = systemSettings?.currencySymbol?.trim() || APP_CONFIG.currencySymbol;
+  const currencySymbol = normalizeCurrencySymbol(
+    systemSettings?.currencySymbol,
+    systemSettings?.currency
+  );
 
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilterOption>('All');

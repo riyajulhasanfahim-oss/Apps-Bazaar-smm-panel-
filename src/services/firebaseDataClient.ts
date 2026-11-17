@@ -56,6 +56,11 @@ import type {
 } from '../types';
 import { APP_CONFIG } from '../config/app.config';
 import { dataClient as demoClient, type IDataClient } from './dataClient';
+import {
+  calculateOrderCharge,
+  isPackageService,
+  normalizeCurrencySymbol,
+} from '../utils/pricing';
 
 export interface PublicCatalogBundle {
   platforms: PlatformCategory[];
@@ -76,18 +81,18 @@ export function invalidatePublicCatalogCache(): void {
 }
 
 async function getDynamicCurrencySymbol(): Promise<string> {
-  const cachedSymbol = memoryPublicBundle?.systemSettings?.currencySymbol?.trim();
-  if (cachedSymbol) return cachedSymbol;
+  const cachedSettings = memoryPublicBundle?.systemSettings;
+  if (cachedSettings?.currencySymbol?.trim()) {
+    return normalizeCurrencySymbol(cachedSettings.currencySymbol, cachedSettings.currency);
+  }
 
   const services = getFirebaseServices();
   if (!services) return APP_CONFIG.currencySymbol;
   try {
     const sysSnap = await getDoc(doc(services.db, FIRESTORE_COLLECTIONS.settings, SETTINGS_DOC_IDS.system));
     if (sysSnap.exists()) {
-      const data = sysSnap.data() as { currencySymbol?: string };
-      if (data.currencySymbol?.trim()) {
-        return data.currencySymbol.trim();
-      }
+      const data = sysSnap.data() as { currencySymbol?: string; currency?: string };
+      return normalizeCurrencySymbol(data.currencySymbol, data.currency);
     }
   } catch {
     // Fallback cleanly
@@ -261,8 +266,17 @@ export async function fetchPublicCatalogBundle(options?: {
       ).catch(() => null),
     ]);
 
-    const systemSettings: Partial<FirestoreSettingsDoc> | null =
+    const rawSystemSettings: Partial<FirestoreSettingsDoc> | null =
       sysSnap && sysSnap.exists() ? (sysSnap.data() as FirestoreSettingsDoc) : null;
+    const systemSettings: Partial<FirestoreSettingsDoc> | null = rawSystemSettings
+      ? {
+          ...rawSystemSettings,
+          currencySymbol: normalizeCurrencySymbol(
+            rawSystemSettings.currencySymbol,
+            rawSystemSettings.currency
+          ),
+        }
+      : null;
     const hideDemo = Boolean(
       systemSettings?.productionMode && systemSettings?.demoDataEnabled === false
     );
@@ -488,8 +502,10 @@ export class FirestoreDataClient implements IDataClient {
           );
         }
 
-        const authoritativeCharge = Number(
-          ((quantity / 1000) * Number(serviceDoc.sellingPrice)).toFixed(2)
+        const authoritativeCharge = calculateOrderCharge(
+          quantity,
+          Number(serviceDoc.sellingPrice ?? 0),
+          isPackageService(serviceDoc)
         );
         const balanceBefore = Number(userDoc.balance ?? 0);
 
