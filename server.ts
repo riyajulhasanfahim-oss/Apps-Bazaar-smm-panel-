@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const UPSTREAM_TIMEOUT_MS = 30000;
+const UPSTREAM_TIMEOUT_MS = 45000;
 const RETRY_BACKOFF_MINUTES = [2, 5, 15, 30, 60];
 
 interface ProviderProxyBody {
@@ -476,10 +476,53 @@ function validateProviderUrl(rawUrl: string): URL {
   return parsed;
 }
 
-function sanitizeErrorMessage(message: string, secretKey: string): string {
-  let clean = message || 'Provider API request failed.';
-  if (secretKey && secretKey.trim().length > 0) {
-    clean = clean.split(secretKey.trim()).join('[REDACTED]');
+function normalizeServerErrorText(
+  value: unknown,
+  fallback: string = 'Provider API request failed.'
+): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || fallback;
+  }
+  if (value instanceof Error) {
+    return value.message?.trim() || fallback;
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => normalizeServerErrorText(item, '')).filter(Boolean);
+    return parts.length > 0 ? parts.join('; ') : fallback;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const field of ['message', 'error', 'detail', 'reason', 'statusText', 'description']) {
+      if (record[field] !== undefined && record[field] !== null) {
+        const extracted = normalizeServerErrorText(record[field], '');
+        if (extracted) {
+          const codePrefix =
+            typeof record.code === 'number' || typeof record.code === 'string'
+              ? `[${record.code}] `
+              : '';
+          return `${codePrefix}${extracted}`;
+        }
+      }
+    }
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch {
+      // ignore JSON serialization failure
+    }
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return fallback;
+}
+
+function sanitizeErrorMessage(message: unknown, secretKey: unknown): string {
+  let clean = normalizeServerErrorText(message, 'Provider API request failed.');
+  const trimmedKey = typeof secretKey === 'string' ? secretKey.trim() : '';
+  if (trimmedKey.length > 0) {
+    clean = clean.split(trimmedKey).join('[REDACTED]');
   }
   return clean.slice(0, 260);
 }
@@ -597,8 +640,8 @@ async function callUpstreamSmmV2(
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         const errObj = parsed as { error?: unknown; message?: unknown };
         const upstreamMsg = errObj.error ?? errObj.message;
-        if (upstreamMsg) {
-          throw new Error(sanitizeErrorMessage(String(upstreamMsg), apiKey));
+        if (upstreamMsg !== undefined && upstreamMsg !== null && upstreamMsg !== '') {
+          throw new Error(sanitizeErrorMessage(upstreamMsg, apiKey));
         }
       }
       throw new Error(describeNonJsonResponse(rawText, response.status, apiKey));
@@ -615,13 +658,13 @@ async function callUpstreamSmmV2(
       'error' in parsed &&
       (parsed as { error: unknown }).error
     ) {
-      throw new Error(sanitizeErrorMessage(String((parsed as { error: unknown }).error), apiKey));
+      throw new Error(sanitizeErrorMessage((parsed as { error: unknown }).error, apiKey));
     }
 
     return parsed;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('Provider API request timed out after 30 seconds.');
+      throw new Error('Provider API request timed out after 45 seconds.');
     }
     if (err instanceof Error) {
       throw new Error(sanitizeErrorMessage(err.message, apiKey));
@@ -634,8 +677,26 @@ async function callUpstreamSmmV2(
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+  app.set('trust proxy', 1);
+  app.use('/api', (req: Request, res: Response, next: express.NextFunction) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true });
@@ -1113,8 +1174,12 @@ async function startServer() {
     }
   });
 
+  app.use('/api', (_req: Request, res: Response) => {
+    res.status(404).json({ ok: false, error: 'API endpoint not found.' });
+  });
+
   app.use('/api', (err: unknown, _req: Request, res: Response, _next: express.NextFunction) => {
-    const message = err instanceof Error ? err.message : 'Internal API server error.';
+    const message = normalizeServerErrorText(err, 'Internal API server error.');
     res.status(500).json({ ok: false, error: message });
   });
 
@@ -1129,10 +1194,20 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
+    app.use(
+      express.static(distDir, {
+        setHeaders: (res, filePath) => {
+          const base = path.basename(filePath);
+          if (base === 'index.html' || base === 'sw.js' || base === 'manifest.webmanifest') {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          }
+        },
+      })
+    );
     app.get('*', (_req: Request, res: Response) => {
       const indexHtml = path.join(distDir, 'index.html');
       if (fs.existsSync(indexHtml)) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         res.sendFile(indexHtml);
       } else {
         res.status(404).send('Build output not found.');

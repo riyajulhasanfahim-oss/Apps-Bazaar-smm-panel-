@@ -71,10 +71,55 @@ export interface IProviderAdapter {
   ): Promise<ProviderOrderStatusResult>;
 }
 
-function sanitizeClientMessage(message: string, apiKey: string): string {
-  const key = apiKey.trim();
-  if (!key) return message;
-  return message.split(key).join('[REDACTED]');
+function normalizeErrorText(
+  value: unknown,
+  fallback: string = 'Provider API request failed.'
+): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || fallback;
+  }
+  if (value instanceof Error) {
+    return value.message?.trim() || fallback;
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => normalizeErrorText(item, ''))
+      .filter(Boolean);
+    return parts.length > 0 ? parts.join('; ') : fallback;
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const field of ['message', 'error', 'detail', 'reason', 'statusText', 'description']) {
+      if (record[field] !== undefined && record[field] !== null) {
+        const extracted = normalizeErrorText(record[field], '');
+        if (extracted) {
+          const codePrefix =
+            typeof record.code === 'number' || typeof record.code === 'string'
+              ? `[${record.code}] `
+              : '';
+          return `${codePrefix}${extracted}`;
+        }
+      }
+    }
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch {
+      // fall through
+    }
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return fallback;
+}
+
+function sanitizeClientMessage(message: unknown, apiKey: unknown): string {
+  const text = normalizeErrorText(message, 'Provider API request failed.');
+  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (!key) return text;
+  return text.split(key).join('[REDACTED]');
 }
 
 function parseNumeric(value: unknown, fallback: number): number {
@@ -95,6 +140,33 @@ function parseUpstreamBool(value: unknown): boolean {
     return norm === '1' || norm === 'true' || norm === 'yes';
   }
   return false;
+}
+
+function unwrapServiceRows(raw: unknown): Record<string, unknown>[] | null {
+  if (Array.isArray(raw)) {
+    return raw.filter(
+      (row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')
+    );
+  }
+  if (raw && typeof raw === 'object') {
+    const record = raw as Record<string, unknown>;
+    for (const key of ['services', 'data', 'result', 'items']) {
+      const candidate = record[key];
+      if (Array.isArray(candidate)) {
+        return candidate.filter(
+          (row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')
+        );
+      }
+    }
+    const entries = Object.entries(record);
+    if (entries.length > 0 && entries.every(([, v]) => v && typeof v === 'object' && !Array.isArray(v))) {
+      return entries.map(([keyId, v]) => {
+        const obj = v as Record<string, unknown>;
+        return obj.service !== undefined || obj.id !== undefined ? obj : { service: keyId, ...obj };
+      });
+    }
+  }
+  return null;
 }
 
 function describeProxyNonJson(rawText: string, status: number): string {
@@ -123,9 +195,9 @@ async function postProviderProxy<T>(
     throw new Error('Admin authentication required to contact provider API.');
   }
 
-  const providerId = config.providerId?.trim() ?? '';
-  const apiUrl = config.apiUrl.trim();
-  const apiKey = config.apiKey.trim();
+  const providerId = typeof config.providerId === 'string' ? config.providerId.trim() : '';
+  const apiUrl = typeof config.apiUrl === 'string' ? config.apiUrl.trim() : '';
+  const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
 
   if (!providerId && (!apiUrl || !apiKey)) {
     throw new Error('Provider API URL and API Key are required.');
@@ -134,7 +206,7 @@ async function postProviderProxy<T>(
   const idToken = await currentUser.getIdToken();
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 35000);
+  const timer = setTimeout(() => controller.abort(), 50000);
   let response: Response;
   try {
     response = await fetch('/api/provider/execute', {
@@ -169,18 +241,31 @@ async function postProviderProxy<T>(
     throw new Error(`Failed to read provider proxy response (HTTP ${response.status}).`);
   }
 
-  let payload: { ok?: boolean; data?: T; error?: string } | null = null;
+  let parsedJson: unknown = null;
   if (rawText.trim()) {
     try {
-      payload = JSON.parse(rawText) as { ok?: boolean; data?: T; error?: string };
+      parsedJson = JSON.parse(rawText);
     } catch {
       throw new Error(sanitizeClientMessage(describeProxyNonJson(rawText, response.status), apiKey));
     }
   }
 
+  const payload =
+    parsedJson && typeof parsedJson === 'object' && !Array.isArray(parsedJson)
+      ? (parsedJson as { ok?: boolean; data?: T; error?: unknown; message?: unknown })
+      : null;
+
   if (!response.ok || !payload?.ok || payload.data === undefined) {
-    const rawMsg = payload?.error || `Provider API call failed (HTTP ${response.status}).`;
-    throw new Error(sanitizeClientMessage(rawMsg, apiKey));
+    const rawErrorSource =
+      payload?.error ??
+      payload?.message ??
+      (Array.isArray(parsedJson) ? null : parsedJson) ??
+      `Provider API call failed (HTTP ${response.status}).`;
+    const msg = normalizeErrorText(
+      rawErrorSource,
+      `Provider API call failed (HTTP ${response.status}).`
+    );
+    throw new Error(sanitizeClientMessage(msg, apiKey));
   }
 
   return payload.data;
@@ -202,8 +287,9 @@ export class StandardSmmV2Adapter implements IProviderAdapter {
   }
 
   async getServices(config: ProviderCredentials): Promise<ProviderServiceDTO[]> {
-    const rawList = await postProviderProxy<Record<string, unknown>[]>('services', config);
-    if (!Array.isArray(rawList)) {
+    const rawPayload = await postProviderProxy<unknown>('services', config);
+    const rawList = unwrapServiceRows(rawPayload);
+    if (!rawList) {
       throw new Error('Provider did not return a valid list of services.');
     }
     return rawList
