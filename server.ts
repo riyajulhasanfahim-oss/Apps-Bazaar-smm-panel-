@@ -10,7 +10,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const UPSTREAM_TIMEOUT_MS = 15000;
+const UPSTREAM_TIMEOUT_MS = 30000;
 const RETRY_BACKOFF_MINUTES = [2, 5, 15, 30, 60];
 
 interface ProviderProxyBody {
@@ -484,12 +484,62 @@ function sanitizeErrorMessage(message: string, secretKey: string): string {
   return clean.slice(0, 260);
 }
 
+function parseUpstreamNumber(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.-]/g, '').trim();
+    if (!cleaned) return NaN;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : NaN;
+  }
+  return NaN;
+}
+
+function extractServicesArray(raw: unknown): Array<Record<string, unknown>> | null {
+  if (Array.isArray(raw)) {
+    return raw.filter(
+      (row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')
+    );
+  }
+  if (raw && typeof raw === 'object') {
+    const record = raw as Record<string, unknown>;
+    for (const key of ['services', 'data', 'result', 'items']) {
+      const candidate = record[key];
+      if (Array.isArray(candidate)) {
+        return candidate.filter(
+          (row): row is Record<string, unknown> => Boolean(row && typeof row === 'object')
+        );
+      }
+    }
+    const entries = Object.entries(record);
+    if (entries.length > 0 && entries.every(([, v]) => v && typeof v === 'object' && !Array.isArray(v))) {
+      return entries.map(([keyId, v]) => {
+        const obj = v as Record<string, unknown>;
+        return obj.service !== undefined || obj.id !== undefined ? obj : { service: keyId, ...obj };
+      });
+    }
+  }
+  return null;
+}
+
+function describeNonJsonResponse(rawText: string, status: number, secretKey: string): string {
+  const trimmed = rawText.trim();
+  const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(trimmed);
+  const snippet = titleMatch?.[1]
+    ? titleMatch[1].replace(/\s+/g, ' ').trim()
+    : trimmed.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+  const base = snippet
+    ? `Provider returned HTTP ${status} non-JSON response: ${snippet}`
+    : `Provider returned HTTP ${status} empty or non-JSON response.`;
+  return sanitizeErrorMessage(base, secretKey);
+}
+
 async function callUpstreamSmmV2(
   apiUrl: string,
   apiKey: string,
   params: Record<string, string>
 ): Promise<unknown> {
-  const targetUrl = validateProviderUrl(apiUrl);
+  let currentUrl = validateProviderUrl(apiUrl);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
@@ -499,34 +549,63 @@ async function callUpstreamSmmV2(
       ...params,
     });
 
-    const response = await fetch(targetUrl.toString(), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json, text/plain, */*',
-      },
-      body: body.toString(),
-      signal: controller.signal,
-    });
+    let response: globalThis.Response | null = null;
+    for (let hop = 0; hop < 4; hop += 1) {
+      response = await fetch(currentUrl.toString(), {
+        method: 'POST',
+        redirect: 'manual',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          Accept: 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (compatible; RJWorldBD-SMM-Client/2.0)',
+        },
+        body: body.toString(),
+        signal: controller.signal,
+      });
 
-    const rawText = await response.text();
+      if (
+        response.status === 301 ||
+        response.status === 302 ||
+        response.status === 303 ||
+        response.status === 307 ||
+        response.status === 308
+      ) {
+        const location = response.headers.get('location');
+        if (!location) break;
+        const resolved = new URL(location, currentUrl).toString();
+        currentUrl = validateProviderUrl(resolved);
+        continue;
+      }
+      break;
+    }
+
+    if (!response) {
+      throw new Error('Unable to reach provider API endpoint.');
+    }
+
+    const rawText = (await response.text()).replace(/^\uFEFF/, '').trim();
     let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      parsed = null;
+    if (rawText) {
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        parsed = null;
+      }
     }
 
     if (!response.ok) {
-      const upstreamMsg =
-        parsed && typeof parsed === 'object' && 'error' in parsed
-          ? String((parsed as { error: unknown }).error)
-          : `Provider returned HTTP ${response.status}.`;
-      throw new Error(sanitizeErrorMessage(upstreamMsg, apiKey));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const errObj = parsed as { error?: unknown; message?: unknown };
+        const upstreamMsg = errObj.error ?? errObj.message;
+        if (upstreamMsg) {
+          throw new Error(sanitizeErrorMessage(String(upstreamMsg), apiKey));
+        }
+      }
+      throw new Error(describeNonJsonResponse(rawText, response.status, apiKey));
     }
 
-    if (!parsed) {
-      throw new Error('Provider returned an unexpected non-JSON response.');
+    if (parsed === null) {
+      throw new Error(describeNonJsonResponse(rawText, response.status, apiKey));
     }
 
     if (
@@ -542,7 +621,7 @@ async function callUpstreamSmmV2(
     return parsed;
   } catch (err) {
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('Provider API request timed out after 15 seconds.');
+      throw new Error('Provider API request timed out after 30 seconds.');
     }
     if (err instanceof Error) {
       throw new Error(sanitizeErrorMessage(err.message, apiKey));
@@ -866,16 +945,37 @@ async function startServer() {
     const fbTarget = resolveRequestFirebaseTarget(payload);
 
     try {
+      const authUser = await lookupFirebaseAuthUser(idToken, fbTarget.apiKey);
+      if (!authUser || authUser.disabled || authUser.email !== DESIGNATED_ADMIN_EMAIL) {
+        res.status(403).json({ ok: false, error: 'Unauthorized: Admin privileges required.' });
+        return;
+      }
+
       if (providerId) {
-        const provDoc = await fetchFirestoreDocWithToken(
-          `apiProviders/${providerId}`,
-          idToken,
-          fbTarget
-        );
-        apiUrl = String(provDoc.apiUrl || '').trim();
-        apiKey = String(provDoc.apiKey || '').trim();
+        try {
+          const provDoc = await fetchFirestoreDocWithToken(
+            `apiProviders/${providerId}`,
+            idToken,
+            fbTarget
+          );
+          const storedUrl = String(provDoc.apiUrl || '').trim();
+          const storedKey = String(provDoc.apiKey || '').trim();
+          if (storedUrl) apiUrl = storedUrl;
+          if (storedKey) apiKey = storedKey;
+        } catch (fsErr) {
+          if (!apiUrl || !apiKey) {
+            throw fsErr;
+          }
+        }
       } else {
-        await verifyAdminViaFirestoreRest(idToken, fbTarget);
+        try {
+          await verifyAdminViaFirestoreRest(idToken, fbTarget);
+        } catch (fsErr) {
+          console.warn(
+            '[provider/execute] Firestore RBAC probe warning:',
+            fsErr instanceof Error ? fsErr.message : String(fsErr)
+          );
+        }
       }
 
       if (!apiUrl || !apiKey) {
@@ -887,24 +987,39 @@ async function startServer() {
           action: 'balance',
         })) as Record<string, unknown>;
 
-        const rawBalance = Number(balanceData.balance ?? 0);
+        if (!balanceData || typeof balanceData !== 'object' || Array.isArray(balanceData)) {
+          throw new Error('Provider balance response did not return a valid JSON object.');
+        }
+
+        const rawBalance = parseUpstreamNumber(balanceData.balance);
         const currency =
           typeof balanceData.currency === 'string' && balanceData.currency.trim()
             ? balanceData.currency.trim()
             : 'USD';
 
-        if (!Number.isFinite(rawBalance) && !('balance' in balanceData)) {
-          throw new Error('Provider balance response did not include a valid balance field.');
+        if (!('balance' in balanceData) || !Number.isFinite(rawBalance)) {
+          throw new Error('Provider balance response did not include a valid "balance" field.');
         }
 
         if (action === 'testConnection') {
+          const rawServices = await callUpstreamSmmV2(apiUrl, apiKey, {
+            action: 'services',
+          });
+          const serviceRows = extractServicesArray(rawServices);
+          if (!serviceRows) {
+            throw new Error(
+              'Balance check succeeded, but provider services endpoint did not return a valid service list.'
+            );
+          }
+
           res.json({
             ok: true,
             data: {
               ok: true,
-              message: 'API Connection Successful',
-              balance: Number.isFinite(rawBalance) ? rawBalance : 0,
+              message: `Connected (${serviceRows.length} services, Balance: ${rawBalance.toFixed(2)} ${currency})`,
+              balance: rawBalance,
               currency,
+              serviceCount: serviceRows.length,
             },
           });
           return;
@@ -913,7 +1028,7 @@ async function startServer() {
         res.json({
           ok: true,
           data: {
-            balance: Number.isFinite(rawBalance) ? rawBalance : 0,
+            balance: rawBalance,
             currency,
           },
         });
@@ -924,14 +1039,15 @@ async function startServer() {
         const rawServices = await callUpstreamSmmV2(apiUrl, apiKey, {
           action: 'services',
         });
+        const serviceRows = extractServicesArray(rawServices);
 
-        if (!Array.isArray(rawServices)) {
-          throw new Error('Provider services endpoint did not return a service list array.');
+        if (!serviceRows) {
+          throw new Error('Provider services endpoint did not return a valid service list array.');
         }
 
         res.json({
           ok: true,
-          data: rawServices,
+          data: serviceRows,
         });
         return;
       }
@@ -995,6 +1111,11 @@ async function startServer() {
         error: msg,
       });
     }
+  });
+
+  app.use('/api', (err: unknown, _req: Request, res: Response, _next: express.NextFunction) => {
+    const message = err instanceof Error ? err.message : 'Internal API server error.';
+    res.status(500).json({ ok: false, error: message });
   });
 
   const isProd = process.env.NODE_ENV === 'production';

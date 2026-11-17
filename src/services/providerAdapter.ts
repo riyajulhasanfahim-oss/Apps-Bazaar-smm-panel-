@@ -35,6 +35,7 @@ export interface ProviderConnectionResult {
   message: string;
   balance?: number;
   currency?: string;
+  serviceCount?: number;
 }
 
 export interface ProviderAddOrderInput {
@@ -76,6 +77,41 @@ function sanitizeClientMessage(message: string, apiKey: string): string {
   return message.split(key).join('[REDACTED]');
 }
 
+function parseNumeric(value: unknown, fallback: number): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.-]/g, '').trim();
+    if (!cleaned) return fallback;
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function parseUpstreamBool(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  if (typeof value === 'string') {
+    const norm = value.trim().toLowerCase();
+    return norm === '1' || norm === 'true' || norm === 'yes';
+  }
+  return false;
+}
+
+function describeProxyNonJson(rawText: string, status: number): string {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return `Provider proxy returned an empty HTTP ${status} response.`;
+  }
+  const titleMatch = /<title[^>]*>([^<]+)<\/title>/i.exec(trimmed);
+  const snippet = titleMatch?.[1]
+    ? titleMatch[1].replace(/\s+/g, ' ').trim()
+    : trimmed.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+  if (snippet) {
+    return `Provider proxy returned HTTP ${status} (${snippet}).`;
+  }
+  return `Provider proxy returned unexpected HTTP ${status} non-JSON response.`;
+}
+
 async function postProviderProxy<T>(
   action: 'testConnection' | 'services' | 'balance' | 'add' | 'status',
   config: ProviderCredentials,
@@ -97,12 +133,15 @@ async function postProviderProxy<T>(
 
   const idToken = await currentUser.getIdToken();
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35000);
   let response: Response;
   try {
     response = await fetch('/api/provider/execute', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json',
         Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
@@ -112,20 +151,35 @@ async function postProviderProxy<T>(
         ...getActiveFirebaseTargetPayload(),
         ...extra,
       }),
+      signal: controller.signal,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Provider API request timed out waiting for server response.');
+    }
     throw new Error('Unable to reach internal provider proxy service.');
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let rawText = '';
+  try {
+    rawText = (await response.text()).replace(/^\uFEFF/, '');
+  } catch {
+    throw new Error(`Failed to read provider proxy response (HTTP ${response.status}).`);
   }
 
   let payload: { ok?: boolean; data?: T; error?: string } | null = null;
-  try {
-    payload = (await response.json()) as { ok?: boolean; data?: T; error?: string };
-  } catch {
-    throw new Error('Invalid response received from provider proxy.');
+  if (rawText.trim()) {
+    try {
+      payload = JSON.parse(rawText) as { ok?: boolean; data?: T; error?: string };
+    } catch {
+      throw new Error(sanitizeClientMessage(describeProxyNonJson(rawText, response.status), apiKey));
+    }
   }
 
   if (!response.ok || !payload?.ok || payload.data === undefined) {
-    const rawMsg = payload?.error || `Provider API call failed (${response.status}).`;
+    const rawMsg = payload?.error || `Provider API call failed (HTTP ${response.status}).`;
     throw new Error(sanitizeClientMessage(rawMsg, apiKey));
   }
 
@@ -149,30 +203,38 @@ export class StandardSmmV2Adapter implements IProviderAdapter {
 
   async getServices(config: ProviderCredentials): Promise<ProviderServiceDTO[]> {
     const rawList = await postProviderProxy<Record<string, unknown>[]>('services', config);
+    if (!Array.isArray(rawList)) {
+      throw new Error('Provider did not return a valid list of services.');
+    }
     return rawList
       .map((item) => {
-        const providerServiceId = String(item.service ?? item.id ?? '').trim();
-        const name = String(item.name ?? '').trim();
+        const providerServiceId = String(
+          item.service ?? item.id ?? item.service_id ?? ''
+        ).trim();
+        const name = String(item.name ?? item.service_name ?? '').trim();
         if (!providerServiceId || !name) return null;
 
-        const min = Math.max(1, Math.floor(Number(item.min ?? 10) || 10));
-        const max = Math.max(min, Math.floor(Number(item.max ?? 10000) || 10000));
-        const rate = Math.max(0, Number(item.rate ?? 0) || 0);
+        const min = Math.max(1, Math.floor(parseNumeric(item.min ?? item.min_order, 10)));
+        const max = Math.max(min, Math.floor(parseNumeric(item.max ?? item.max_order, 10000)));
+        const rate = Math.max(0, parseNumeric(item.rate ?? item.price, 0));
 
         return {
           providerServiceId,
           name,
-          category: String(item.category ?? 'General').trim() || 'General',
+          category: String(item.category ?? item.category_name ?? 'General').trim() || 'General',
           type: String(item.type ?? 'Default').trim() || 'Default',
           rate,
           min,
           max,
-          refill: Boolean(item.refill === true || item.refill === 1 || item.refill === '1'),
-          dripfeed: Boolean(
-            item.dripfeed === true || item.dripfeed === 1 || item.dripfeed === '1'
-          ),
-          cancel: Boolean(item.cancel === true || item.cancel === 1 || item.cancel === '1'),
-          description: typeof item.desc === 'string' ? item.desc.trim() : '',
+          refill: parseUpstreamBool(item.refill),
+          dripfeed: parseUpstreamBool(item.dripfeed),
+          cancel: parseUpstreamBool(item.cancel),
+          description:
+            typeof item.desc === 'string'
+              ? item.desc.trim()
+              : typeof item.description === 'string'
+                ? item.description.trim()
+                : '',
         } satisfies ProviderServiceDTO;
       })
       .filter((entry): entry is ProviderServiceDTO => entry !== null);

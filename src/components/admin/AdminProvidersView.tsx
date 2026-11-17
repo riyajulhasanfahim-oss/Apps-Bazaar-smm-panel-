@@ -37,6 +37,7 @@ interface ConnectionFeedback {
   message: string;
   balance?: number;
   currency?: string;
+  serviceCount?: number;
 }
 
 export function AdminProvidersView() {
@@ -62,10 +63,15 @@ export function AdminProvidersView() {
   const [apiUrl, setApiUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [providerFormat, setProviderFormat] = useState('standard_v2');
-  const [status, setStatus] = useState<'active' | 'inactive'>('active');
+  const [status, setStatus] = useState<'active' | 'inactive'>('inactive');
   const [saving, setSaving] = useState(false);
   const [modalTesting, setModalTesting] = useState(false);
   const [modalTestResult, setModalTestResult] = useState<ConnectionFeedback | null>(null);
+  const [modalVerifiedSnapshot, setModalVerifiedSnapshot] = useState<{
+    apiUrl: string;
+    apiKey: string;
+    providerFormat: string;
+  } | null>(null);
 
   // Service Import & Review modal state
   const [importProvider, setImportProvider] = useState<AdminApiProviderItem | null>(null);
@@ -159,8 +165,9 @@ export function AdminProvidersView() {
     setApiUrl('https://');
     setApiKey('');
     setProviderFormat('standard_v2');
-    setStatus('active');
+    setStatus('inactive');
     setModalTestResult(null);
+    setModalVerifiedSnapshot(null);
     setModalOpen(true);
   };
 
@@ -172,17 +179,20 @@ export function AdminProvidersView() {
     setProviderFormat(prov.providerFormat || 'standard_v2');
     setStatus(prov.status);
     setModalTestResult(null);
+    setModalVerifiedSnapshot(null);
     setModalOpen(true);
   };
 
   const handleTestInModal = async () => {
     setModalTesting(true);
     setModalTestResult(null);
+    const cleanUrl = apiUrl.trim();
+    const cleanKey = apiKey.trim();
     try {
       const adapter = getProviderAdapter(providerFormat);
       const res = await adapter.testConnection({
-        apiUrl,
-        apiKey,
+        apiUrl: cleanUrl,
+        apiKey: cleanKey,
         format: providerFormat,
       });
       setModalTestResult({
@@ -190,8 +200,15 @@ export function AdminProvidersView() {
         message: res.message,
         balance: res.balance,
         currency: res.currency,
+        serviceCount: res.serviceCount,
+      });
+      setModalVerifiedSnapshot({
+        apiUrl: cleanUrl,
+        apiKey: cleanKey,
+        providerFormat,
       });
     } catch (err) {
+      setModalVerifiedSnapshot(null);
       setModalTestResult({
         ok: false,
         message: err instanceof Error ? err.message : 'Connection test failed.',
@@ -204,25 +221,73 @@ export function AdminProvidersView() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    const cleanUrl = apiUrl.trim();
+    const cleanKey = apiKey.trim();
+    let verifiedResult: ConnectionFeedback | null =
+      modalTestResult?.ok &&
+      modalVerifiedSnapshot?.apiUrl === cleanUrl &&
+      modalVerifiedSnapshot?.apiKey === cleanKey &&
+      modalVerifiedSnapshot?.providerFormat === providerFormat
+        ? modalTestResult
+        : null;
+
     try {
+      if (status === 'active' && !verifiedResult) {
+        try {
+          const adapter = getProviderAdapter(providerFormat);
+          const res = await adapter.testConnection({
+            apiUrl: cleanUrl,
+            apiKey: cleanKey,
+            format: providerFormat,
+          });
+          verifiedResult = {
+            ok: true,
+            message: res.message,
+            balance: res.balance,
+            currency: res.currency,
+            serviceCount: res.serviceCount,
+          };
+          setModalTestResult(verifiedResult);
+          setModalVerifiedSnapshot({
+            apiUrl: cleanUrl,
+            apiKey: cleanKey,
+            providerFormat,
+          });
+        } catch (connErr) {
+          const msg =
+            connErr instanceof Error
+              ? connErr.message
+              : 'Provider connection could not be verified.';
+          setModalVerifiedSnapshot(null);
+          setModalTestResult({ ok: false, message: msg });
+          showToast({
+            title: 'Connection Verification Required',
+            description: `${msg} Fix credentials or set Status to Inactive before saving.`,
+            tone: 'error',
+          });
+          return;
+        }
+      }
+
       const savedProvId = await adminPanelService.saveApiProvider({
         id: editing?.id,
         name,
-        apiUrl,
-        apiKey,
+        apiUrl: cleanUrl,
+        apiKey: cleanKey,
         providerFormat,
-        ...(modalTestResult?.ok && typeof modalTestResult.balance === 'number'
+        ...(verifiedResult?.ok && typeof verifiedResult.balance === 'number'
           ? {
-              lastBalance: modalTestResult.balance,
-              lastBalanceCurrency: modalTestResult.currency ?? 'USD',
+              lastBalance: verifiedResult.balance,
+              lastBalanceCurrency: verifiedResult.currency ?? 'USD',
             }
           : {}),
         status,
       });
-      if (modalTestResult?.ok) {
+      const confirmedFeedback = verifiedResult;
+      if (confirmedFeedback?.ok) {
         setConnectionResults((prev) => ({
           ...prev,
-          [savedProvId]: modalTestResult,
+          [savedProvId]: confirmedFeedback,
         }));
       }
       showToast({
@@ -246,16 +311,85 @@ export function AdminProvidersView() {
   const handleToggle = async (prov: AdminApiProviderItem) => {
     const nextStatus = prov.status === 'active' ? 'inactive' : 'active';
     try {
+      let verifiedBalance: { balance?: number; currency?: string; message: string; serviceCount?: number } | null = null;
+      if (nextStatus === 'active') {
+        setTestingId(prov.id);
+        try {
+          const adapter = getProviderAdapter(prov.providerFormat);
+          const res = await adapter.testConnection({
+            providerId: prov.id,
+            apiUrl: prov.apiUrl,
+            apiKey: prov.apiKey,
+            format: prov.providerFormat,
+          });
+          verifiedBalance = {
+            balance: res.balance,
+            currency: res.currency,
+            message: res.message,
+            serviceCount: res.serviceCount,
+          };
+          setConnectionResults((prev) => ({
+            ...prev,
+            [prov.id]: {
+              ok: true,
+              message: res.message,
+              balance: res.balance,
+              currency: res.currency,
+              serviceCount: res.serviceCount,
+            },
+          }));
+        } catch (connErr) {
+          const msg = connErr instanceof Error ? connErr.message : 'Provider connection failed.';
+          setConnectionResults((prev) => ({
+            ...prev,
+            [prov.id]: {
+              ok: false,
+              message: msg,
+            },
+          }));
+          showToast({
+            title: 'Cannot Activate Provider',
+            description: `${msg} Verify the API URL and API Key first.`,
+            tone: 'error',
+          });
+          return;
+        } finally {
+          setTestingId(null);
+        }
+      }
+
       await adminPanelService.saveApiProvider({
         ...prov,
+        ...(typeof verifiedBalance?.balance === 'number'
+          ? {
+              lastBalance: verifiedBalance.balance,
+              lastBalanceCurrency: verifiedBalance.currency ?? 'USD',
+            }
+          : {}),
         status: nextStatus,
       });
       setProviders((prev) =>
-        prev.map((p) => (p.id === prov.id ? { ...p, status: nextStatus } : p))
+        prev.map((p) =>
+          p.id === prov.id
+            ? {
+                ...p,
+                status: nextStatus,
+                ...(typeof verifiedBalance?.balance === 'number'
+                  ? {
+                      lastBalance: verifiedBalance.balance,
+                      lastBalanceCurrency: verifiedBalance.currency ?? 'USD',
+                    }
+                  : {}),
+              }
+            : p
+        )
       );
       showToast({
         title: 'Provider Status Updated',
-        description: `${prov.name} is now ${nextStatus}.`,
+        description:
+          nextStatus === 'active' && verifiedBalance
+            ? `${prov.name} verified & activated (${verifiedBalance.message}).`
+            : `${prov.name} is now ${nextStatus}.`,
         tone: 'success',
       });
     } catch (err) {
@@ -272,6 +406,7 @@ export function AdminProvidersView() {
     try {
       const adapter = getProviderAdapter(prov.providerFormat);
       const res = await adapter.testConnection({
+        providerId: prov.id,
         apiUrl: prov.apiUrl,
         apiKey: prov.apiKey,
         format: prov.providerFormat,
@@ -283,6 +418,7 @@ export function AdminProvidersView() {
           message: res.message,
           balance: res.balance,
           currency: res.currency,
+          serviceCount: res.serviceCount,
         },
       }));
       if (typeof res.balance === 'number') {
@@ -301,8 +437,9 @@ export function AdminProvidersView() {
       }
       showToast({
         title: 'API Connection Successful',
-        description:
-          typeof res.balance === 'number'
+        description: res.message
+          ? `${prov.name}: ${res.message}`
+          : typeof res.balance === 'number'
             ? `${prov.name} responded cleanly (Balance: ${res.balance.toFixed(2)} ${res.currency ?? 'USD'}).`
             : `${prov.name} responded cleanly.`,
         tone: 'success',
@@ -316,6 +453,19 @@ export function AdminProvidersView() {
           message: msg,
         },
       }));
+      if (prov.status === 'active') {
+        try {
+          await adminPanelService.saveApiProvider({
+            ...prov,
+            status: 'inactive',
+          });
+          setProviders((prev) =>
+            prev.map((p) => (p.id === prov.id ? { ...p, status: 'inactive' } : p))
+          );
+        } catch {
+          // ignore status downgrade error if write fails
+        }
+      }
       showToast({
         title: 'Connection Failed',
         description: msg,
@@ -331,6 +481,7 @@ export function AdminProvidersView() {
     try {
       const adapter = getProviderAdapter(prov.providerFormat);
       const bal = await adapter.getBalance({
+        providerId: prov.id,
         apiUrl: prov.apiUrl,
         apiKey: prov.apiKey,
         format: prov.providerFormat,
@@ -373,13 +524,22 @@ export function AdminProvidersView() {
     try {
       const adapter = getProviderAdapter(prov.providerFormat);
       const list = await adapter.getServices({
+        providerId: prov.id,
         apiUrl: prov.apiUrl,
         apiKey: prov.apiKey,
         format: prov.providerFormat,
       });
       setImportedList(list);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Failed to fetch provider services.');
+      const msg = err instanceof Error ? err.message : 'Failed to fetch provider services.';
+      setImportError(msg);
+      setConnectionResults((prev) => ({
+        ...prev,
+        [prov.id]: {
+          ok: false,
+          message: msg,
+        },
+      }));
     } finally {
       setImportLoading(false);
     }
@@ -614,6 +774,8 @@ export function AdminProvidersView() {
           const revealed = Boolean(revealedIds[prov.id]);
           const connResult = connectionResults[prov.id];
           const mappedCount = mappedCountsByProvider.get(prov.id) ?? 0;
+          const isVerified = connResult ? connResult.ok : typeof prov.lastBalance === 'number';
+          const isEffectivelyActive = prov.status === 'active' && isVerified;
 
           return (
             <div
@@ -637,14 +799,21 @@ export function AdminProvidersView() {
                 </div>
                 <button
                   type="button"
+                  disabled={testingId === prov.id}
                   onClick={() => handleToggle(prov)}
-                  className={`rounded-lg px-2.5 py-1 text-[11px] font-bold shrink-0 ${
-                    prov.status === 'active'
+                  className={`rounded-lg px-2.5 py-1 text-[11px] font-bold shrink-0 disabled:opacity-60 ${
+                    isEffectivelyActive
                       ? 'bg-emerald-50 text-emerald-700'
-                      : 'bg-slate-100 text-slate-600'
+                      : prov.status === 'active' && !isVerified
+                        ? 'bg-amber-50 text-amber-700'
+                        : 'bg-slate-100 text-slate-600'
                   }`}
                 >
-                  {prov.status}
+                  {isEffectivelyActive
+                    ? 'active'
+                    : prov.status === 'active' && !isVerified
+                      ? 'unverified'
+                      : 'inactive'}
                 </button>
               </div>
 
@@ -815,7 +984,11 @@ export function AdminProvidersView() {
                 </label>
                 <select
                   value={providerFormat}
-                  onChange={(e) => setProviderFormat(e.target.value)}
+                  onChange={(e) => {
+                    setProviderFormat(e.target.value);
+                    setModalTestResult(null);
+                    setModalVerifiedSnapshot(null);
+                  }}
                   className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm"
                 >
                   <option value="standard_v2">Standard SMM Panel API v2</option>
@@ -828,7 +1001,11 @@ export function AdminProvidersView() {
                   type="url"
                   required
                   value={apiUrl}
-                  onChange={(e) => setApiUrl(e.target.value)}
+                  onChange={(e) => {
+                    setApiUrl(e.target.value);
+                    setModalTestResult(null);
+                    setModalVerifiedSnapshot(null);
+                  }}
                   placeholder="https://provider.example/api/v2"
                   className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 font-mono text-sm"
                 />
@@ -840,7 +1017,11 @@ export function AdminProvidersView() {
                   type="password"
                   required
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    setModalTestResult(null);
+                    setModalVerifiedSnapshot(null);
+                  }}
                   placeholder="Enter secret API key"
                   className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 font-mono text-sm"
                 />
