@@ -92,11 +92,10 @@ service cloud.firestore {
       return charge >= expected - 0.02 && charge <= expected + 0.02;
     }
 
-    function matchesOrderServiceAndBalance(orderId, ord) {
+    function matchesOrderServiceAndBalance(ord) {
       let srv = get(/databases/$(database)/documents/services/$(ord.serviceId)).data;
       let usr = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
       let usrAfter = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-      let txnAfter = getAfter(/databases/$(database)/documents/transactions/$(ord.paymentTransactionId)).data;
       return usr.status == 'active'
         && srv.status == 'active'
         && ord.quantity >= srv.minQuantity
@@ -105,39 +104,39 @@ service cloud.firestore {
         && ord.charge <= usr.balance
         && usrAfter.balance >= usr.balance - ord.charge - 0.02
         && usrAfter.balance <= usr.balance - ord.charge + 0.02
-        && txnAfter.userId == request.auth.uid
-        && txnAfter.type == 'order_payment'
-        && txnAfter.referenceId == orderId;
+        && 'lastTxnId' in usrAfter
+        && usrAfter.lastTxnId == ord.paymentTransactionId;
     }
 
-    function canCreateCustomerOrder(orderId, ord) {
+    function canCreateCustomerOrder(ord) {
       return exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && exists(/databases/$(database)/documents/services/$(ord.serviceId))
         && existsAfter(/databases/$(database)/documents/transactions/$(ord.paymentTransactionId))
-        && matchesOrderServiceAndBalance(orderId, ord);
+        && matchesOrderServiceAndBalance(ord);
     }
 
     function matchesUserOrderPaymentUpdate(userId, inc, ext) {
       let txnAfter = getAfter(/databases/$(database)/documents/transactions/$(inc.lastTxnId)).data;
       return txnAfter.userId == userId
         && txnAfter.type == 'order_payment'
-        && txnAfter.balanceAfter == inc.balance
+        && txnAfter.balanceBefore >= ext.balance - 0.01
+        && txnAfter.balanceBefore <= ext.balance + 0.01
+        && txnAfter.balanceAfter >= inc.balance - 0.01
+        && txnAfter.balanceAfter <= inc.balance + 0.01
+        && txnAfter.amount <= 0.01
+        && 'referenceId' in txnAfter
+        && isValidId(txnAfter.referenceId)
         && inc.balance >= 0
         && inc.balance <= ext.balance + 0.01;
     }
 
     function matchesOrderPaymentTransaction(txn) {
-      let ordAfter = getAfter(/databases/$(database)/documents/orders/$(txn.referenceId)).data;
       let usr = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-      let usrAfter = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-      return ordAfter.userId == request.auth.uid
-        && txn.balanceBefore == usr.balance
+      return txn.balanceBefore >= usr.balance - 0.01
+        && txn.balanceBefore <= usr.balance + 0.01
         && txn.balanceAfter >= 0
-        && (txn.balanceBefore - txn.balanceAfter) >= ordAfter.charge - 0.02
-        && (txn.balanceBefore - txn.balanceAfter) <= ordAfter.charge + 0.02
-        && txn.amount >= -ordAfter.charge - 0.02
-        && txn.amount <= -ordAfter.charge + 0.02
-        && usrAfter.balance == txn.balanceAfter;
+        && txn.balanceAfter <= txn.balanceBefore + 0.01
+        && txn.amount <= 0.01;
     }
 
     // -------------------------------------------------------------------------
@@ -150,9 +149,9 @@ service cloud.firestore {
         && data.uid == uid
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 180
-        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
-        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 1000))
-        && (!('lastTxnId' in data) || (data.lastTxnId is string && data.lastTxnId.size() <= 128))
+        && (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 32))
+        && (!('photoUrl' in data) || data.photoUrl == null || (data.photoUrl is string && data.photoUrl.size() <= 1000))
+        && (!('lastTxnId' in data) || data.lastTxnId == null || (data.lastTxnId is string && data.lastTxnId.size() <= 128))
         && data.role in ['user', 'admin']
         && data.balance is number && data.balance >= 0
         && data.status in ['active', 'suspended', 'blocked']
@@ -743,7 +742,7 @@ service cloud.firestore {
         && (!('paymentStatus' in incoming()) || incoming().paymentStatus == 'paid')
         && 'paymentTransactionId' in incoming()
         && isValidId(incoming().paymentTransactionId)
-        && canCreateCustomerOrder(orderId, incoming())
+        && canCreateCustomerOrder(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(orderId)

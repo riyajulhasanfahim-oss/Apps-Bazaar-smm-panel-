@@ -520,7 +520,7 @@ export class FirestoreDataClient implements IDataClient {
         const cleanServiceName = (
           serviceDoc.name.split('–')[0].trim() || serviceDoc.name || 'SMM Service'
         ).slice(0, 160);
-        const resolvedServiceId = serviceDoc.id || srvSnap.id;
+        const resolvedServiceId = srvSnap.id;
         const resolvedCategoryId =
           typeof serviceDoc.categoryId === 'string' &&
           /^[a-zA-Z0-9_-]{1,128}$/.test(serviceDoc.categoryId.trim())
@@ -576,7 +576,7 @@ export class FirestoreDataClient implements IDataClient {
           title: 'Order Placed Successfully',
           message: `অর্ডার #${orderNumber} (${cleanServiceName}) গ্রহণ করা হয়েছে। চার্জ: ${currencySymbol}${authoritativeCharge.toFixed(
             2
-          )}।`,
+          )}।`.slice(0, 500),
           type: 'order_created',
           referenceId: id,
           read: false,
