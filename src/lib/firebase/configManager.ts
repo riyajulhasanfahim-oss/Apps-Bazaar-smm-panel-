@@ -130,12 +130,14 @@ export function validateFirebaseConfig(
 export function getActiveFirebaseTargetPayload(): {
   firebaseProjectId?: string;
   firebaseDatabaseId?: string;
+  firebaseApiKey?: string;
 } {
   const active = resolveActiveFirebaseConfig();
   if (!active) return {};
   return {
     firebaseProjectId: active.projectId,
     ...(active.firestoreDatabaseId ? { firebaseDatabaseId: active.firestoreDatabaseId } : {}),
+    ...(active.apiKey ? { firebaseApiKey: active.apiKey } : {}),
   };
 }
 
