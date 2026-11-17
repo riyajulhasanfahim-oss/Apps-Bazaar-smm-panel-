@@ -79,6 +79,67 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(uid)).data.status == 'active';
     }
 
+    function isOrderChargeValid(qty, charge, srv) {
+      let isPackage = (
+        ('serviceType' in srv && srv.serviceType is string && srv.serviceType.lower() == 'package') ||
+        ('deliverySpeed' in srv && srv.deliverySpeed is string && srv.deliverySpeed.lower().matches('.*package.*')) ||
+        ('description' in srv && srv.description is string && srv.description.lower().matches('.*\\(\\s*package\\s*\\).*')) ||
+        (srv.minQuantity == 1 && srv.maxQuantity == 1)
+      );
+      let expected = isPackage
+        ? (qty * srv.sellingPrice)
+        : ((qty * srv.sellingPrice) / 1000.0);
+      return charge >= expected - 0.02 && charge <= expected + 0.02;
+    }
+
+    function matchesOrderServiceAndBalance(orderId, ord) {
+      let srv = get(/databases/$(database)/documents/services/$(ord.serviceId)).data;
+      let usr = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      let usrAfter = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      let txnAfter = getAfter(/databases/$(database)/documents/transactions/$(ord.paymentTransactionId)).data;
+      return usr.status == 'active'
+        && srv.status == 'active'
+        && ord.quantity >= srv.minQuantity
+        && ord.quantity <= srv.maxQuantity
+        && isOrderChargeValid(ord.quantity, ord.charge, srv)
+        && ord.charge <= usr.balance
+        && usrAfter.balance >= usr.balance - ord.charge - 0.02
+        && usrAfter.balance <= usr.balance - ord.charge + 0.02
+        && txnAfter.userId == request.auth.uid
+        && txnAfter.type == 'order_payment'
+        && txnAfter.referenceId == orderId;
+    }
+
+    function canCreateCustomerOrder(orderId, ord) {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && exists(/databases/$(database)/documents/services/$(ord.serviceId))
+        && existsAfter(/databases/$(database)/documents/transactions/$(ord.paymentTransactionId))
+        && matchesOrderServiceAndBalance(orderId, ord);
+    }
+
+    function matchesUserOrderPaymentUpdate(userId, inc, ext) {
+      let txnAfter = getAfter(/databases/$(database)/documents/transactions/$(inc.lastTxnId)).data;
+      return txnAfter.userId == userId
+        && txnAfter.type == 'order_payment'
+        && txnAfter.balanceAfter == inc.balance
+        && inc.balance >= 0
+        && inc.balance <= ext.balance + 0.01;
+    }
+
+    function matchesOrderPaymentTransaction(txn) {
+      let ordAfter = getAfter(/databases/$(database)/documents/orders/$(txn.referenceId)).data;
+      let usr = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      let usrAfter = getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return ordAfter.userId == request.auth.uid
+        && txn.balanceBefore == usr.balance
+        && txn.balanceAfter >= 0
+        && (txn.balanceBefore - txn.balanceAfter) >= ordAfter.charge - 0.02
+        && (txn.balanceBefore - txn.balanceAfter) <= ordAfter.charge + 0.02
+        && txn.amount >= -ordAfter.charge - 0.02
+        && txn.amount <= -ordAfter.charge + 0.02
+        && usrAfter.balance == txn.balanceAfter;
+    }
+
     // -------------------------------------------------------------------------
     // Entity Validation Blueprints (Anti-Update-Gap)
     // -------------------------------------------------------------------------
@@ -608,14 +669,10 @@ service cloud.firestore {
             isOwner(userId)
             && existing().status == 'active'
             && incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'lastTxnId', 'updatedAt'])
-            && incoming().balance >= 0
-            && incoming().balance <= existing().balance
             && 'lastTxnId' in incoming()
             && isValidId(incoming().lastTxnId)
             && existsAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxnId))
-            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxnId)).data.userId == userId
-            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxnId)).data.type == 'order_payment'
-            && getAfter(/databases/$(database)/documents/transactions/$(incoming().lastTxnId)).data.balanceAfter == incoming().balance
+            && matchesUserOrderPaymentUpdate(userId, incoming(), existing())
           )
         );
       allow delete: if isValidId(userId) && isAdmin();
@@ -686,27 +743,7 @@ service cloud.firestore {
         && (!('paymentStatus' in incoming()) || incoming().paymentStatus == 'paid')
         && 'paymentTransactionId' in incoming()
         && isValidId(incoming().paymentTransactionId)
-        && isActiveUser(request.auth.uid)
-        && exists(/databases/$(database)/documents/services/$(incoming().serviceId))
-        && get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.status == 'active'
-        && (
-          !('providerId' in get(/databases/$(database)/documents/services/$(incoming().serviceId)).data) ||
-          get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.providerId == '' ||
-          (
-            exists(/databases/$(database)/documents/apiProviders/$(get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.providerId)) &&
-            get(/databases/$(database)/documents/apiProviders/$(get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.providerId)).data.status == 'active'
-          )
-        )
-        && incoming().quantity >= get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.minQuantity
-        && incoming().quantity <= get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.maxQuantity
-        && incoming().charge >= ((incoming().quantity * get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.sellingPrice) / 1000.0) - 0.01
-        && incoming().charge <= ((incoming().quantity * get(/databases/$(database)/documents/services/$(incoming().serviceId)).data.sellingPrice) / 1000.0) + 0.01
-        && incoming().charge <= get(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance
-        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance >= get(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance - incoming().charge - 0.01
-        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance <= get(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance - incoming().charge + 0.01
-        && existsAfter(/databases/$(database)/documents/transactions/$(incoming().paymentTransactionId))
-        && getAfter(/databases/$(database)/documents/transactions/$(incoming().paymentTransactionId)).data.type == 'order_payment'
-        && getAfter(/databases/$(database)/documents/transactions/$(incoming().paymentTransactionId)).data.referenceId == orderId
+        && canCreateCustomerOrder(orderId, incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isValidId(orderId)
@@ -796,12 +833,7 @@ service cloud.firestore {
             && isValidId(incoming().referenceId)
             && !exists(/databases/$(database)/documents/orders/$(incoming().referenceId))
             && existsAfter(/databases/$(database)/documents/orders/$(incoming().referenceId))
-            && getAfter(/databases/$(database)/documents/orders/$(incoming().referenceId)).data.userId == request.auth.uid
-            && incoming().balanceBefore == get(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance
-            && incoming().balanceAfter >= 0
-            && (incoming().balanceBefore - incoming().balanceAfter) >= getAfter(/databases/$(database)/documents/orders/$(incoming().referenceId)).data.charge - 0.01
-            && (incoming().balanceBefore - incoming().balanceAfter) <= getAfter(/databases/$(database)/documents/orders/$(incoming().referenceId)).data.charge + 0.01
-            && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.balance == incoming().balanceAfter
+            && matchesOrderPaymentTransaction(incoming())
           )
         );
       allow update: if false;

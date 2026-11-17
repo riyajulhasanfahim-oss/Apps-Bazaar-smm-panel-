@@ -157,11 +157,18 @@ export const authService = {
     }
 
     const userRef = doc(services.db, FIRESTORE_COLLECTIONS.users, authUser.uid);
+    const safeName = (
+      input.fullName.trim() ||
+      (authUser.email ?? input.email).split('@')[0]?.trim() ||
+      'Customer'
+    ).slice(0, 120);
+    const safeEmail = (authUser.email ?? input.email).trim().slice(0, 180);
+
     const newProfileDoc: FirestoreUserDoc = {
       uid: authUser.uid,
-      name: input.fullName.trim(),
-      email: (authUser.email ?? input.email).trim(),
-      phone: input.phone.trim(),
+      name: safeName,
+      email: safeEmail,
+      phone: input.phone.trim().slice(0, 32),
       photoUrl: '',
       role: 'user',
       balance: 0,
@@ -355,18 +362,22 @@ export const authService = {
       throw new Error('You must be signed in to update your profile.');
     }
 
+    const safeName = (input.name.trim() || 'Customer').slice(0, 120);
+    const safePhone = input.phone.trim().slice(0, 32);
+    const safePhotoUrl = input.photoUrl.trim().slice(0, 1000);
+
     const userRef = doc(services.db, FIRESTORE_COLLECTIONS.users, uid);
     try {
       await updateDoc(userRef, {
-        name: input.name.trim(),
-        phone: input.phone.trim(),
-        photoUrl: input.photoUrl.trim(),
+        name: safeName,
+        phone: safePhone,
+        photoUrl: safePhotoUrl,
         updatedAt: serverTimestamp(),
       });
 
       await updateProfile(services.auth.currentUser, {
-        displayName: input.name.trim(),
-        ...(input.photoUrl.trim().startsWith('http') ? { photoURL: input.photoUrl.trim() } : {}),
+        displayName: safeName,
+        ...(safePhotoUrl.startsWith('http') ? { photoURL: safePhotoUrl } : {}),
       });
 
       const refreshed = await getDoc(userRef);

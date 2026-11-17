@@ -455,7 +455,7 @@ export class FirestoreDataClient implements IDataClient {
     const srvRef = doc(services.db, FIRESTORE_COLLECTIONS.services, input.serviceId);
     const userRef = doc(services.db, FIRESTORE_COLLECTIONS.users, uid);
 
-    const rawIdemKey = input.idempotencyKey?.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+    const rawIdemKey = input.idempotencyKey?.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 44);
     const orderNumber =
       rawIdemKey && rawIdemKey.length >= 6
         ? rawIdemKey
@@ -517,14 +517,22 @@ export class FirestoreDataClient implements IDataClient {
         }
 
         const balanceAfter = Number((balanceBefore - authoritativeCharge).toFixed(2));
-        const cleanServiceName = serviceDoc.name.split('–')[0].trim().slice(0, 160);
+        const cleanServiceName = (
+          serviceDoc.name.split('–')[0].trim() || serviceDoc.name || 'SMM Service'
+        ).slice(0, 160);
+        const resolvedServiceId = serviceDoc.id || srvSnap.id;
+        const resolvedCategoryId =
+          typeof serviceDoc.categoryId === 'string' &&
+          /^[a-zA-Z0-9_-]{1,128}$/.test(serviceDoc.categoryId.trim())
+            ? serviceDoc.categoryId.trim()
+            : undefined;
 
         const orderPayload: FirestoreOrderDoc = {
           id,
           userId: uid,
-          serviceId: serviceDoc.id,
+          serviceId: resolvedServiceId,
           serviceName: cleanServiceName,
-          categoryId: serviceDoc.categoryId,
+          ...(resolvedCategoryId ? { categoryId: resolvedCategoryId } : {}),
           providerId: '',
           providerOrderId: '',
           link: validatedLink,
