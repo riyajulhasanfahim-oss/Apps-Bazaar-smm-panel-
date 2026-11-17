@@ -28,7 +28,18 @@ export function MobileBottomNav() {
             <button
               key={item.id}
               type="button"
-              onClick={() => navigateProtected(item.id as DashboardTab)}
+              onClick={() => {
+                navigateProtected(item.id as DashboardTab);
+                if (typeof window !== 'undefined') {
+                  try {
+                    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+                  } catch {
+                    window.scrollTo(0, 0);
+                  }
+                  document.documentElement.scrollTop = 0;
+                  document.body.scrollTop = 0;
+                }
+              }}
               aria-current={isActive ? 'page' : undefined}
               className={`relative flex h-full flex-col items-center justify-center gap-0.5 transition-colors ${
                 isActive ? 'text-violet-700' : 'text-slate-500 hover:text-slate-800'

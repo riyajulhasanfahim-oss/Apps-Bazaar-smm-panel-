@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useState } from 'react';
 import { Ban, AlertTriangle, LogOut } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Toast } from './components/common/Toast';
@@ -24,6 +24,17 @@ import { NotificationsPage } from './pages/NotificationsPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { ApiDashboardPage } from './pages/ApiDashboardPage';
 import { AdminPanelPage } from './pages/AdminPanelPage';
+
+function resetScrollToTop() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+  } catch {
+    window.scrollTo(0, 0);
+  }
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
 
 function AccountStatusRestrictedView() {
   const { accountStatus, profile, logoutUser, goToHome } = useApp();
@@ -81,6 +92,10 @@ function DashboardShell() {
   const { activeTab, firebaseUser, authReady, accountStatus, dataError, refreshCustomerData } =
     useApp();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  useLayoutEffect(() => {
+    resetScrollToTop();
+  }, [activeTab]);
 
   if (firebaseUser && accountStatus !== 'active') {
     return <AccountStatusRestrictedView />;
@@ -160,6 +175,11 @@ function DashboardShell() {
 
 function AppContent() {
   const { viewMode, firebaseUser, userRole, accountStatus } = useApp();
+
+  useLayoutEffect(() => {
+    resetScrollToTop();
+  }, [viewMode]);
+
   const canRenderAdmin =
     viewMode === 'admin' &&
     Boolean(firebaseUser) &&
