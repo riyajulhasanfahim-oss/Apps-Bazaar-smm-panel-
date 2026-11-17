@@ -588,17 +588,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ? staffAccess.staffRole
           : null;
         const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
+        const effectiveStatus: UserAccountStatus =
+          effectiveRole === 'admin' ? 'active' : authProfile.status;
 
         const mappedProfile = toCustomerProfile(
           {
             ...authProfile,
             role: effectiveRole,
+            status: effectiveStatus,
           },
           resolvedStaffRole
         );
 
         setProfile(mappedProfile);
-        setAccountStatus(authProfile.status);
+        setAccountStatus(effectiveStatus);
         setUserRole(effectiveRole);
         setStaffRole(resolvedStaffRole);
         setWallet((prev) => ({
@@ -847,7 +850,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ...prev,
           balance: Number(data.balance ?? 0),
         }));
-        setAccountStatus(data.status ?? 'active');
+        const effectiveStatus: UserAccountStatus = adminService.isDesignatedAdminEmail(
+          firebaseUser.email
+        )
+          ? 'active'
+          : (data.status ?? 'active');
+        setAccountStatus(effectiveStatus);
         setProfile((prev) =>
           prev
             ? {
@@ -855,7 +863,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 fullName: data.name || prev.fullName,
                 phone: data.phone ?? prev.phone,
                 photoUrl: data.photoUrl ?? prev.photoUrl,
-                status: data.status,
+                status: effectiveStatus,
               }
             : prev
         );

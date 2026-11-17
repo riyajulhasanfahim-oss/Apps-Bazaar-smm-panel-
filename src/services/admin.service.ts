@@ -56,10 +56,11 @@ async function ensureAdminRoleDocsSynced(authUser: FirebaseAuthUser): Promise<vo
     const userRef = doc(services.db, FIRESTORE_COLLECTIONS.users, authUser.uid);
     const userSnap = await getDoc(userRef);
     if (userSnap.exists()) {
-      const u = userSnap.data() as { role?: string };
-      if (u.role !== 'admin') {
+      const u = userSnap.data() as { role?: string; status?: string };
+      if (u.role !== 'admin' || u.status !== 'active') {
         await updateDoc(userRef, {
           role: 'admin',
+          status: 'active',
           updatedAt: serverTimestamp(),
         });
       }
@@ -123,7 +124,7 @@ export const adminService = {
           if (json.claimsSynced) {
             await currentUser.getIdToken(true).catch(() => undefined);
           }
-          void ensureAdminRoleDocsSynced(currentUser);
+          await ensureAdminRoleDocsSynced(currentUser);
           return {
             isStaff: true,
             staffRole: json.staffRole || 'super_admin',
@@ -136,10 +137,16 @@ export const adminService = {
           reason: 'not_admin',
         };
       }
+
+      // Non-OK HTTP status from proxy/gateway (e.g. 404/502/503): verify against active Firebase Auth session
+      if (this.isDesignatedAdminEmail(currentUser.email)) {
+        await ensureAdminRoleDocsSynced(currentUser);
+        return { isStaff: true, staffRole: 'super_admin', reason: 'verified' };
+      }
     } catch {
       // Fallback when backend proxy is unreachable (e.g. static hosting): rely strictly on active Firebase Auth user
       if (this.isDesignatedAdminEmail(currentUser.email)) {
-        void ensureAdminRoleDocsSynced(currentUser);
+        await ensureAdminRoleDocsSynced(currentUser);
         return { isStaff: true, staffRole: 'super_admin', reason: 'verified' };
       }
     }

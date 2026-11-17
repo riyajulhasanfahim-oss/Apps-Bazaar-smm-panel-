@@ -296,15 +296,24 @@ export const authService = {
     if (snap.exists()) {
       const profile = mapFirestoreUser(snap.data() as FirestoreUserDoc);
       profile.role = isDesignatedAdmin ? 'admin' : 'user';
+      if (isDesignatedAdmin) {
+        profile.status = 'active';
+      }
       return profile;
     }
 
+    const safeName = (
+      authUser.displayName?.trim() ||
+      authUser.email?.split('@')[0]?.trim() ||
+      'Customer'
+    ).slice(0, 120);
+
     const createdDoc: FirestoreUserDoc = {
       uid: authUser.uid,
-      name: authUser.displayName ?? authUser.email?.split('@')[0] ?? 'Customer',
-      email: authUser.email ?? 'user@example.com',
-      phone: authUser.phoneNumber ?? '',
-      photoUrl: authUser.photoURL ?? '',
+      name: safeName,
+      email: (authUser.email ?? 'user@example.com').trim().slice(0, 180),
+      phone: (authUser.phoneNumber ?? '').trim().slice(0, 32),
+      photoUrl: (authUser.photoURL ?? '').trim().slice(0, 1000),
       role: 'user',
       balance: 0,
       status: 'active',
@@ -321,6 +330,9 @@ export const authService = {
         ? mapFirestoreUser(refreshed.data() as FirestoreUserDoc)
         : mapFirestoreUser(createdDoc);
       createdProfile.role = isDesignatedAdmin ? 'admin' : 'user';
+      if (isDesignatedAdmin) {
+        createdProfile.status = 'active';
+      }
       return createdProfile;
     } catch (error) {
       handleFirestoreError(

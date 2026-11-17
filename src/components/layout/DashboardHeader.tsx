@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Bell, ChevronDown, LogOut, Menu, User, Globe } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, Menu, ShieldCheck, User, Globe } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { BrandLogo } from '../common/BrandLogo';
 
@@ -19,11 +19,14 @@ function getNotifPillLabel(category: string): string {
 export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
   const {
     firebaseUser,
+    userRole,
+    accountStatus,
     profile,
     notifications,
     handleNotificationClick,
     markAllNotificationsRead,
     setActiveTab,
+    setViewMode,
     openAuthModal,
     logoutUser,
   } = useApp();
@@ -96,6 +99,16 @@ export function DashboardHeader({ onOpenMobileMenu }: DashboardHeaderProps) {
           </div>
         ) : (
         <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+          {userRole === 'admin' && accountStatus === 'active' && (
+            <button
+              type="button"
+              onClick={() => setViewMode('admin')}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl bg-violet-700 px-3 text-xs font-bold text-white shadow-xs transition-colors hover:bg-violet-800 whitespace-nowrap"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Admin Panel</span>
+            </button>
+          )}
           {/* Notification Menu */}
           <div className="relative" ref={notifRef}>
             <button

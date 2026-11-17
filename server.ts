@@ -582,7 +582,17 @@ async function startServer() {
         return;
       }
 
-      await verifyAdminViaFirestoreRest(idToken, fbTarget);
+      let firestoreVerified = false;
+      try {
+        await verifyAdminViaFirestoreRest(idToken, fbTarget);
+        firestoreVerified = true;
+      } catch (fsErr) {
+        console.warn(
+          '[verify-admin] Firestore REST verification skipped/failed for designated admin:',
+          fsErr instanceof Error ? fsErr.message : String(fsErr)
+        );
+      }
+
       const claimsSynced = await syncAdminCustomClaimsBestEffort(
         authUser.uid,
         authUser.customClaims,
@@ -595,6 +605,7 @@ async function startServer() {
         staffRole: 'super_admin',
         role: 'admin',
         claimsSynced,
+        firestoreVerified,
         reason: 'verified',
       });
     } catch {
