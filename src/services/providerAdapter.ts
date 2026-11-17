@@ -466,8 +466,8 @@ export function resolveCategoryForImportedService<
   // 1. Match suggested canonical platform against existing categories (exact ID, alias ID, or name)
   const aliases = PLATFORM_ALIASES[suggested.categoryId] ?? [suggested.categoryId];
   const canonicalMatch = existingCategories.find((cat) => {
-    const cid = cat.id.trim().toLowerCase();
-    const cname = cat.name.trim().toLowerCase();
+    const cid = String(cat.id ?? '').trim().toLowerCase();
+    const cname = String(cat.name ?? '').trim().toLowerCase();
     if (cid === suggested.categoryId) return true;
     return aliases.some(
       (alias) =>
@@ -487,8 +487,8 @@ export function resolveCategoryForImportedService<
 
   // 2. Dynamically check all existing category names/IDs (e.g. Discord, Spotify, Snapchat, Pinterest, Threads, Twitch)
   const dynamicMatch = existingCategories.find((cat) => {
-    const cid = cat.id.trim().toLowerCase();
-    const cname = cat.name.trim().toLowerCase();
+    const cid = String(cat.id ?? '').trim().toLowerCase();
+    const cname = String(cat.name ?? '').trim().toLowerCase();
     const candidates = Array.from(
       new Set([
         cid,
