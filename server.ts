@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -151,6 +152,7 @@ interface VerifiedFirebaseUser {
   email: string;
   emailVerified: boolean;
   disabled: boolean;
+  customClaims?: Record<string, unknown>;
 }
 
 async function lookupFirebaseAuthUser(
@@ -183,6 +185,7 @@ async function lookupFirebaseAuthUser(
       email?: string;
       emailVerified?: boolean;
       disabled?: boolean;
+      customAttributes?: string;
     }>;
   };
 
@@ -191,12 +194,155 @@ async function lookupFirebaseAuthUser(
     throw new Error('Unauthorized: User account not found.');
   }
 
+  let customClaims: Record<string, unknown> | undefined;
+  if (typeof user.customAttributes === 'string' && user.customAttributes.trim()) {
+    try {
+      const parsed = JSON.parse(user.customAttributes) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        customClaims = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // ignore malformed customAttributes
+    }
+  }
+
   return {
     uid: user.localId,
     email: (user.email || '').trim().toLowerCase(),
     emailVerified: Boolean(user.emailVerified),
     disabled: Boolean(user.disabled),
+    customClaims,
   };
+}
+
+async function getIdentityToolkitAdminToken(): Promise<string | null> {
+  try {
+    const rawInline = (
+      process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+      process.env.FIREBASE_SERVICE_ACCOUNT ||
+      ''
+    ).trim();
+    let creds: { client_email?: string; private_key?: string; token_uri?: string } | null = null;
+    if (rawInline) {
+      creds = JSON.parse(rawInline) as {
+        client_email?: string;
+        private_key?: string;
+        token_uri?: string;
+      };
+    } else {
+      const credPath = (process.env.GOOGLE_APPLICATION_CREDENTIALS || '').trim();
+      if (credPath && fs.existsSync(credPath)) {
+        creds = JSON.parse(fs.readFileSync(credPath, 'utf8')) as {
+          client_email?: string;
+          private_key?: string;
+          token_uri?: string;
+        };
+      }
+    }
+
+    if (creds?.client_email && creds?.private_key) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const tokenUri = creds.token_uri || 'https://oauth2.googleapis.com/token';
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString(
+        'base64url'
+      );
+      const claimSet = Buffer.from(
+        JSON.stringify({
+          iss: creds.client_email,
+          scope: 'https://www.googleapis.com/auth/identitytoolkit',
+          aud: tokenUri,
+          iat: nowSec,
+          exp: nowSec + 3600,
+        })
+      ).toString('base64url');
+      const signingInput = `${header}.${claimSet}`;
+      const signer = crypto.createSign('RSA-SHA256');
+      signer.update(signingInput);
+      signer.end();
+      const signature = signer.sign(creds.private_key.replace(/\\n/g, '\n'), 'base64url');
+      const assertion = `${signingInput}.${signature}`;
+      const tokenRes = await fetch(tokenUri, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion,
+        }).toString(),
+      });
+      if (tokenRes.ok) {
+        const json = (await tokenRes.json()) as { access_token?: string };
+        if (json.access_token) return json.access_token;
+      }
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    try {
+      const metaRes = await fetch(
+        'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+        {
+          method: 'GET',
+          headers: { 'Metadata-Flavor': 'Google' },
+          signal: controller.signal,
+        }
+      );
+      if (metaRes.ok) {
+        const metaJson = (await metaRes.json()) as { access_token?: string };
+        if (metaJson.access_token) return metaJson.access_token;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    // Non-blocking: host may not have Identity Toolkit Admin credentials
+  }
+  return null;
+}
+
+async function syncAdminCustomClaimsBestEffort(
+  uid: string,
+  existingClaims: Record<string, unknown> | undefined,
+  target: FirebaseTarget
+): Promise<boolean> {
+  if (
+    existingClaims?.admin === true &&
+    existingClaims?.role === 'admin' &&
+    existingClaims?.staffRole === 'super_admin'
+  ) {
+    return false;
+  }
+
+  try {
+    const adminToken = await getIdentityToolkitAdminToken();
+    if (!adminToken || !target.projectId) return false;
+
+    const mergedClaims = {
+      ...(existingClaims ?? {}),
+      role: 'admin',
+      admin: true,
+      staffRole: 'super_admin',
+    };
+
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/projects/${encodeURIComponent(
+        target.projectId
+      )}/accounts:update`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          localId: uid,
+          customAttributes: JSON.stringify(mergedClaims),
+        }),
+      }
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -212,13 +358,11 @@ async function verifyAdminViaFirestoreRest(
   }
 
   const authUser = await lookupFirebaseAuthUser(idToken, target.apiKey);
-  if (authUser) {
-    if (authUser.disabled) {
-      throw new Error('Unauthorized: Account is disabled.');
-    }
-    if (authUser.email !== DESIGNATED_ADMIN_EMAIL || !authUser.emailVerified) {
-      throw new Error('Unauthorized: Admin privileges required.');
-    }
+  if (!authUser) {
+    throw new Error('Unauthorized: Firebase API key configuration is missing.');
+  }
+  if (authUser.disabled || authUser.email !== DESIGNATED_ADMIN_EMAIL) {
+    throw new Error('Unauthorized: Admin privileges required.');
   }
 
   const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
@@ -233,7 +377,7 @@ async function verifyAdminViaFirestoreRest(
     },
   });
 
-  if (response.status === 401 || response.status === 403) {
+  if (response.status !== 200 && response.status !== 404) {
     throw new Error('Unauthorized: Admin privileges required.');
   }
 }
@@ -428,32 +572,29 @@ async function startServer() {
     const fbTarget = resolveRequestFirebaseTarget(req.body);
     try {
       const authUser = await lookupFirebaseAuthUser(idToken, fbTarget.apiKey);
-      if (authUser) {
-        if (authUser.disabled || authUser.email !== DESIGNATED_ADMIN_EMAIL) {
-          res.json({
-            ok: true,
-            isAdmin: false,
-            staffRole: null,
-            reason: authUser.disabled ? 'disabled' : 'not_admin',
-          });
-          return;
-        }
-        if (!authUser.emailVerified) {
-          res.json({
-            ok: true,
-            isAdmin: false,
-            staffRole: null,
-            reason: 'email_unverified',
-          });
-          return;
-        }
+      if (!authUser || authUser.disabled || authUser.email !== DESIGNATED_ADMIN_EMAIL) {
+        res.json({
+          ok: true,
+          isAdmin: false,
+          staffRole: null,
+          reason: authUser?.disabled ? 'disabled' : 'not_admin',
+        });
+        return;
       }
 
       await verifyAdminViaFirestoreRest(idToken, fbTarget);
+      const claimsSynced = await syncAdminCustomClaimsBestEffort(
+        authUser.uid,
+        authUser.customClaims,
+        fbTarget
+      );
+
       res.json({
         ok: true,
         isAdmin: true,
         staffRole: 'super_admin',
+        role: 'admin',
+        claimsSynced,
         reason: 'verified',
       });
     } catch {

@@ -1,9 +1,11 @@
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import type { User as FirebaseAuthUser } from 'firebase/auth';
 import { getFirebaseServices } from '../lib/firebase/client';
 import {
   FIRESTORE_COLLECTIONS,
   SETTINGS_DOC_IDS,
   type AdminStaffRole,
+  type FirestoreAdminUserDoc,
   type FirestoreSettingsDoc,
 } from '../lib/firestore/collections';
 import { OperationType, handleFirestoreError } from '../lib/firestore/errors';
@@ -17,7 +19,54 @@ const DESIGNATED_ADMIN_EMAIL = 'riyajulhasanfahim@gmail.com';
 export interface StaffAccessVerification {
   isStaff: boolean;
   staffRole: AdminStaffRole | null;
-  reason?: 'verified' | 'not_admin' | 'email_unverified';
+  reason?: 'verified' | 'not_admin';
+}
+
+async function ensureAdminRoleDocsSynced(authUser: FirebaseAuthUser): Promise<void> {
+  const services = getFirebaseServices();
+  if (!services || !authUser.uid) return;
+  const normalizedEmail = (authUser.email || '').trim().toLowerCase();
+  if (normalizedEmail !== DESIGNATED_ADMIN_EMAIL) return;
+
+  try {
+    const adminRef = doc(services.db, FIRESTORE_COLLECTIONS.adminUsers, authUser.uid);
+    const adminSnap = await getDoc(adminRef);
+    if (!adminSnap.exists()) {
+      const adminDoc: FirestoreAdminUserDoc = {
+        uid: authUser.uid,
+        name: (authUser.displayName || 'Super Admin').trim().slice(0, 120),
+        email: normalizedEmail,
+        role: 'super_admin',
+        status: 'active',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      await setDoc(adminRef, adminDoc);
+    } else {
+      const existing = adminSnap.data() as Partial<FirestoreAdminUserDoc>;
+      if (existing.role !== 'super_admin' || existing.status !== 'active') {
+        await updateDoc(adminRef, {
+          role: 'super_admin',
+          status: 'active',
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    const userRef = doc(services.db, FIRESTORE_COLLECTIONS.users, authUser.uid);
+    const userSnap = await getDoc(userRef);
+    if (userSnap.exists()) {
+      const u = userSnap.data() as { role?: string };
+      if (u.role !== 'admin') {
+        await updateDoc(userRef, {
+          role: 'admin',
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+  } catch {
+    // Non-blocking sync; Firestore rules still recognize isBootstrapOwner()
+  }
 }
 
 export const adminService = {
@@ -27,12 +76,12 @@ export const adminService = {
 
   /**
    * Verifies server-side Admin authorization via /api/auth/verify-admin with Firebase ID token.
-   * Only the designated verified administrator (riyajulhasanfahim@gmail.com) is authorized.
+   * Only the designated administrator (riyajulhasanfahim@gmail.com) is authorized.
    */
   async verifyStaffAccess(
     _uid: string,
     email?: string | null,
-    emailVerified?: boolean
+    _emailVerified?: boolean
   ): Promise<StaffAccessVerification> {
     if (!this.isDesignatedAdminEmail(email)) {
       return { isStaff: false, staffRole: null, reason: 'not_admin' };
@@ -43,8 +92,13 @@ export const adminService = {
       return { isStaff: false, staffRole: null, reason: 'not_admin' };
     }
 
+    const currentUser = services.auth.currentUser;
+    if (!this.isDesignatedAdminEmail(currentUser.email)) {
+      return { isStaff: false, staffRole: null, reason: 'not_admin' };
+    }
+
     try {
-      const idToken = await services.auth.currentUser.getIdToken();
+      const idToken = await currentUser.getIdToken();
       const res = await fetch('/api/auth/verify-admin', {
         method: 'POST',
         headers: {
@@ -62,9 +116,14 @@ export const adminService = {
           ok?: boolean;
           isAdmin?: boolean;
           staffRole?: AdminStaffRole | null;
-          reason?: 'verified' | 'not_admin' | 'email_unverified';
+          claimsSynced?: boolean;
+          reason?: 'verified' | 'not_admin';
         };
         if (json.ok && json.isAdmin) {
+          if (json.claimsSynced) {
+            await currentUser.getIdToken(true).catch(() => undefined);
+          }
+          void ensureAdminRoleDocsSynced(currentUser);
           return {
             isStaff: true,
             staffRole: json.staffRole || 'super_admin',
@@ -74,12 +133,13 @@ export const adminService = {
         return {
           isStaff: false,
           staffRole: null,
-          reason: json.reason || (emailVerified ? 'not_admin' : 'email_unverified'),
+          reason: 'not_admin',
         };
       }
     } catch {
-      // If server verify endpoint is unreachable (e.g. static build), fall back strictly to verified Firebase Auth user
-      if (emailVerified && this.isDesignatedAdminEmail(email)) {
+      // Fallback when backend proxy is unreachable (e.g. static hosting): rely strictly on active Firebase Auth user
+      if (this.isDesignatedAdminEmail(currentUser.email)) {
+        void ensureAdminRoleDocsSynced(currentUser);
         return { isStaff: true, staffRole: 'super_admin', reason: 'verified' };
       }
     }
@@ -87,7 +147,7 @@ export const adminService = {
     return {
       isStaff: false,
       staffRole: null,
-      reason: emailVerified ? 'not_admin' : 'email_unverified',
+      reason: 'not_admin',
     };
   },
 

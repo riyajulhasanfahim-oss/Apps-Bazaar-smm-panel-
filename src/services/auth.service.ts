@@ -290,12 +290,12 @@ export const authService = {
       );
     }
 
+    const isDesignatedAdmin =
+      authUser.email?.trim().toLowerCase() === 'riyajulhasanfahim@gmail.com';
+
     if (snap.exists()) {
       const profile = mapFirestoreUser(snap.data() as FirestoreUserDoc);
-      const isDesignatedVerifiedAdmin =
-        Boolean(authUser.emailVerified) &&
-        authUser.email?.trim().toLowerCase() === 'riyajulhasanfahim@gmail.com';
-      profile.role = isDesignatedVerifiedAdmin ? 'admin' : 'user';
+      profile.role = isDesignatedAdmin ? 'admin' : 'user';
       return profile;
     }
 
@@ -317,10 +317,11 @@ export const authService = {
       emitNewUserAdminAlert(authUser.uid, createdDoc.name, createdDoc.email);
       ensureResellerProfileBestEffort(authUser.uid, createdDoc.name, createdDoc.email);
       const refreshed = await getDoc(userRef);
-      if (refreshed.exists()) {
-        return mapFirestoreUser(refreshed.data() as FirestoreUserDoc);
-      }
-      return mapFirestoreUser(createdDoc);
+      const createdProfile = refreshed.exists()
+        ? mapFirestoreUser(refreshed.data() as FirestoreUserDoc)
+        : mapFirestoreUser(createdDoc);
+      createdProfile.role = isDesignatedAdmin ? 'admin' : 'user';
+      return createdProfile;
     } catch (error) {
       handleFirestoreError(
         error,

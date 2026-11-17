@@ -22,8 +22,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+    function isDesignatedAdminEmail() {
+      return isSignedIn()
+        && 'email' in request.auth.token
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() == 'riyajulhasanfahim@gmail.com';
     }
 
     function isValidId(id) {
@@ -35,12 +38,11 @@ service cloud.firestore {
     }
 
     function isBootstrapOwner() {
-      return isVerifiedUser() && request.auth.token.email == 'riyajulhasanfahim@gmail.com';
+      return isDesignatedAdminEmail();
     }
 
     function hasActiveStaff() {
-      return isVerifiedUser()
-        && request.auth.token.email == 'riyajulhasanfahim@gmail.com'
+      return isDesignatedAdminEmail()
         && exists(/databases/$(database)/documents/adminUsers/$(request.auth.uid))
         && get(/databases/$(database)/documents/adminUsers/$(request.auth.uid)).data.status == 'active';
     }

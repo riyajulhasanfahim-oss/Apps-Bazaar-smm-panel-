@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { sendEmailVerification, type User as FirebaseAuthUser } from 'firebase/auth';
+import type { User as FirebaseAuthUser } from 'firebase/auth';
 import { collection, doc, limit, onSnapshot, query, where } from 'firebase/firestore';
 import type { DashboardTab } from '../config/navigation.config';
 import { catalogService } from '../services/services.service';
@@ -352,7 +352,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const lastOrderSigRef = useRef<{ sig: string; at: number } | null>(null);
   const pendingRedirectRef = useRef<PendingRedirectTarget | null>(null);
   const requestedAdminRouteRef = useRef<boolean>(isAdminRouteUrl());
-  const verificationNoticeSentRef = useRef<boolean>(false);
+  const interactiveAuthInFlightRef = useRef<boolean>(false);
 
   const adminPermissions = getAdminPermissions(staffRole);
   const openSetupWizard = useCallback(() => setSetupWizardOpen(true), []);
@@ -702,8 +702,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (switchedCache) {
           setProfile(switchedCache.profile);
           setAccountStatus(switchedCache.accountStatus);
-          setUserRole(switchedCache.userRole);
-          setStaffRole(switchedCache.staffRole);
+          if (
+            !interactiveAuthInFlightRef.current &&
+            !adminService.isDesignatedAdminEmail(user.email)
+          ) {
+            setUserRole(switchedCache.userRole);
+            setStaffRole(switchedCache.staffRole);
+          }
           setWallet(switchedCache.wallet);
           setOrderStats(switchedCache.orderStats);
           setOrders(switchedCache.orders);
@@ -713,19 +718,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      const effectiveRole = await hydrateAuthenticatedAccount(user);
-      if (!active) return;
-      setAuthReady(true);
+      if (!interactiveAuthInFlightRef.current) {
+        const effectiveRole = await hydrateAuthenticatedAccount(user);
+        if (!active) return;
+        setAuthReady(true);
 
-      if (requestedAdminRouteRef.current) {
-        requestedAdminRouteRef.current = false;
-        if (effectiveRole === 'admin') {
-          setViewModeState('admin');
-        } else {
-          clearAdminUrlFromBrowser();
-          setActiveTab('home');
-          setViewModeState('dashboard');
+        if (requestedAdminRouteRef.current) {
+          requestedAdminRouteRef.current = false;
+          if (effectiveRole === 'admin') {
+            setViewModeState('admin');
+          } else {
+            clearAdminUrlFromBrowser();
+            setActiveTab('home');
+            setViewModeState('dashboard');
+          }
         }
+      } else {
+        setAuthReady(true);
       }
 
       // Lazy non-blocking background fetch for wallet ledger transactions
@@ -838,7 +847,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ...prev,
           balance: Number(data.balance ?? 0),
         }));
-        setAccountStatus(data.status);
+        setAccountStatus(data.status ?? 'active');
         setProfile((prev) =>
           prev
             ? {
@@ -1015,8 +1024,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const registerWithEmail = useCallback(
     async (input: RegisterInput): Promise<AuthActionResult> => {
+      interactiveAuthInFlightRef.current = true;
       try {
         const created = await authService.registerWithEmail(input);
+        const currentUser = getFirebaseServices()?.auth.currentUser ?? null;
+        if (currentUser) {
+          setFirebaseUser(currentUser);
+        }
         const brand = systemSettings?.websiteName?.trim() || APP_CONFIG.brandName;
         setProfile(toCustomerProfile(created));
         setAccountStatus(created.status);
@@ -1035,6 +1049,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           success: false,
           error: error instanceof Error ? error.message : 'Registration failed.',
         };
+      } finally {
+        interactiveAuthInFlightRef.current = false;
       }
     },
     [applyPostAuthRedirect, showToast, systemSettings?.websiteName]
@@ -1042,6 +1058,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithEmail = useCallback(
     async (input: LoginInput): Promise<AuthActionResult> => {
+      interactiveAuthInFlightRef.current = true;
       try {
         const signedInProfile = await authService.loginWithEmail(input);
         const currentUser = getFirebaseServices()?.auth.currentUser ?? null;
@@ -1058,30 +1075,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ? staffAccess.staffRole
           : null;
         const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
+        const effectiveStatus: UserAccountStatus =
+          effectiveRole === 'admin' ? 'active' : signedInProfile.status;
 
         setProfile(
-          toCustomerProfile({ ...signedInProfile, role: effectiveRole }, resolvedStaffRole)
+          toCustomerProfile(
+            { ...signedInProfile, role: effectiveRole, status: effectiveStatus },
+            resolvedStaffRole
+          )
         );
-        setAccountStatus(signedInProfile.status);
+        setAccountStatus(effectiveStatus);
         setUserRole(effectiveRole);
         setStaffRole(resolvedStaffRole);
+        setWallet((prev) => ({
+          ...prev,
+          balance: Number(signedInProfile.balance ?? prev.balance ?? 0),
+        }));
 
-        if (
-          staffAccess.reason === 'email_unverified' &&
-          currentUser &&
-          !verificationNoticeSentRef.current
-        ) {
-          verificationNoticeSentRef.current = true;
-          void sendEmailVerification(currentUser).catch(() => undefined);
-          showToast({
-            title: 'Email Verification Required',
-            description:
-              'A verification link was sent to your admin email. Verify your email or sign in with Google to unlock Admin Panel access.',
-            tone: 'warning',
-          });
-        }
-
-        if (signedInProfile.status !== 'active') {
+        if (effectiveStatus !== 'active') {
           pendingRedirectRef.current = null;
           clearAdminUrlFromBrowser();
           setActiveTab('home');
@@ -1090,28 +1101,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         applyPostAuthRedirect(effectiveRole);
-        if (staffAccess.reason !== 'email_unverified') {
-          showToast({
-            title: 'Signed In',
-            description:
-              effectiveRole === 'admin'
-                ? 'Administrator access verified.'
-                : `Welcome back, ${signedInProfile.name}.`,
-            tone: 'success',
-          });
-        }
+        showToast({
+          title: 'Signed In',
+          description:
+            effectiveRole === 'admin'
+              ? 'Administrator access verified.'
+              : `Welcome back, ${signedInProfile.name}.`,
+          tone: 'success',
+        });
         return { success: true };
       } catch (error) {
         return {
           success: false,
           error: error instanceof Error ? error.message : 'Login failed.',
         };
+      } finally {
+        interactiveAuthInFlightRef.current = false;
       }
     },
     [applyPostAuthRedirect, showToast]
   );
 
   const loginWithGoogle = useCallback(async (): Promise<AuthActionResult> => {
+    interactiveAuthInFlightRef.current = true;
     try {
       const signedInProfile = await authService.loginWithGoogle();
       const currentUser = getFirebaseServices()?.auth.currentUser ?? null;
@@ -1128,14 +1140,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ? staffAccess.staffRole
         : null;
       const effectiveRole: UserRole = staffAccess.isStaff ? 'admin' : 'user';
+      const effectiveStatus: UserAccountStatus =
+        effectiveRole === 'admin' ? 'active' : signedInProfile.status;
 
       setProfile(
-        toCustomerProfile({ ...signedInProfile, role: effectiveRole }, resolvedStaffRole)
+        toCustomerProfile(
+          { ...signedInProfile, role: effectiveRole, status: effectiveStatus },
+          resolvedStaffRole
+        )
       );
-      setAccountStatus(signedInProfile.status);
+      setAccountStatus(effectiveStatus);
       setUserRole(effectiveRole);
       setStaffRole(resolvedStaffRole);
-      if (signedInProfile.status !== 'active') {
+      setWallet((prev) => ({
+        ...prev,
+        balance: Number(signedInProfile.balance ?? prev.balance ?? 0),
+      }));
+
+      if (effectiveStatus !== 'active') {
         pendingRedirectRef.current = null;
         clearAdminUrlFromBrowser();
         setActiveTab('home');
@@ -1158,6 +1180,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         success: false,
         error: error instanceof Error ? error.message : 'Google sign-in failed.',
       };
+    } finally {
+      interactiveAuthInFlightRef.current = false;
     }
   }, [applyPostAuthRedirect, showToast]);
 
