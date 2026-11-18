@@ -287,18 +287,49 @@ export async function fetchPublicCatalogBundle(options?: {
     if (catSnap && !catSnap.empty) {
       const catDocs = catSnap.docs.map((d) => d.data() as FirestoreCategoryDoc);
       catDocs.forEach((cat) => categoryStatusMap.set(cat.id, cat.status));
+      const activeIds = new Set(
+        catDocs
+          .filter((data) => data.status === 'active' && (!hideDemo || !data.isDemo))
+          .map((data) => data.id.toLowerCase())
+      );
+
       platforms = catDocs
         .filter((data) => data.status === 'active' && (!hideDemo || !data.isDemo))
-        .map((data) => ({
-          id: data.id as PlatformId,
-          name: data.name,
-          shortName: data.id === 'x' || data.name.toLowerCase().startsWith('x ') ? 'X' : data.name,
-          icon: data.icon,
-          description: data.description ?? '',
-          accentColor: '#6D28D9',
-          bgTint: 'bg-violet-50',
-          serviceCount: 0,
-        }));
+        .map((data) => {
+          const idLower = data.id.toLowerCase();
+          let displayName = data.name;
+          let displayIcon = data.icon;
+
+          if (idLower === 'instagram') {
+            displayName = data.name.trim().toLowerCase() === 'instagram' ? 'Instagram' : data.name;
+            displayIcon = 'instagram';
+          } else if (idLower === 'telegram') {
+            displayName = 'Telegram';
+            displayIcon = 'telegram';
+          } else if (idLower === 'tiktok' && activeIds.has('telegram')) {
+            displayName = 'TikTok';
+            displayIcon = 'tiktok';
+          } else if (idLower === 'twitter-x' && activeIds.has('instagram')) {
+            displayName = 'X (Twitter)';
+            displayIcon = 'x';
+          }
+
+          return {
+            id: data.id as PlatformId,
+            name: displayName,
+            shortName:
+              idLower === 'x' ||
+              idLower === 'twitter-x' ||
+              displayName.toLowerCase().startsWith('x ')
+                ? 'X'
+                : displayName,
+            icon: displayIcon,
+            description: data.description ?? '',
+            accentColor: '#6D28D9',
+            bgTint: 'bg-violet-50',
+            serviceCount: 0,
+          };
+        });
     } else if (!hideDemo && catSnap && catSnap.empty) {
       platforms = await demoClient.getPlatforms();
     }
@@ -333,6 +364,18 @@ export async function fetchPublicCatalogBundle(options?: {
     } else if (!hideDemo && srvSnap && srvSnap.empty) {
       parsedServices = await demoClient.getServices();
     }
+
+    const serviceCountsByCategory = new Map<string, number>();
+    for (const srv of parsedServices) {
+      serviceCountsByCategory.set(
+        srv.categoryId,
+        (serviceCountsByCategory.get(srv.categoryId) ?? 0) + 1
+      );
+    }
+    platforms = platforms.map((plat) => ({
+      ...plat,
+      serviceCount: serviceCountsByCategory.get(plat.id) ?? 0,
+    }));
 
     const paymentMethods: PaymentMethodItem[] = pmSnap
       ? pmSnap.docs

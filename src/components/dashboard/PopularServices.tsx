@@ -23,12 +23,98 @@ function isWebTrafficCategory(id: string, name: string): boolean {
   );
 }
 
-export function PopularServices() {
-  const { platforms, selectedPlatform, selectPlatformForOrder, setActiveTab, isLoading } = useApp();
+const CORE_SLOT_SPECS = [
+  {
+    key: 'tiktok',
+    fallbackLabel: 'TikTok',
+    match: (id: string, name: string, icon: string) =>
+      id === 'tiktok' || name === 'tiktok' || icon === 'tiktok',
+  },
+  {
+    key: 'youtube',
+    fallbackLabel: 'YouTube',
+    match: (id: string, name: string, icon: string) =>
+      id === 'youtube' || name.includes('youtube') || icon.includes('youtube'),
+  },
+  {
+    key: 'facebook',
+    fallbackLabel: 'Facebook',
+    match: (id: string, name: string, icon: string) =>
+      id === 'facebook' || name.includes('facebook') || icon.includes('facebook'),
+  },
+  {
+    key: 'x',
+    fallbackLabel: 'X',
+    match: (id: string, name: string, icon: string) =>
+      id === 'x' || id === 'twitter-x' || name === 'x' || name.includes('twitter') || icon === 'x',
+  },
+  {
+    key: 'telegram',
+    fallbackLabel: 'Telegram',
+    match: (id: string, name: string, icon: string) =>
+      id === 'telegram' || name.includes('telegram') || icon.includes('telegram'),
+  },
+  {
+    key: 'instagram',
+    fallbackLabel: 'Instagram',
+    match: (id: string, name: string, icon: string) =>
+      id === 'instagram' || name.includes('instagram') || icon.includes('instagram'),
+  },
+] as const;
 
-  const corePlatforms = platforms
-    .filter((platform) => !isLinkedInCategory(platform.id, platform.name) && !isWebTrafficCategory(platform.id, platform.name))
-    .slice(0, 6);
+export function PopularServices() {
+  const { platforms, services, selectedPlatform, selectPlatformForOrder, setActiveTab, isLoading } = useApp();
+
+  const serviceCountMap = React.useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const srv of services) {
+      counts.set(srv.categoryId, (counts.get(srv.categoryId) ?? 0) + 1);
+    }
+    return counts;
+  }, [services]);
+
+  const nonSpecialPlatforms = platforms.filter(
+    (platform) => !isLinkedInCategory(platform.id, platform.name) && !isWebTrafficCategory(platform.id, platform.name)
+  );
+
+  const usedIds = new Set<string>();
+  const corePlatforms = CORE_SLOT_SPECS.map((spec) => {
+    const candidates = nonSpecialPlatforms.filter((p) => {
+      if (usedIds.has(p.id)) return false;
+      return spec.match(p.id.toLowerCase(), p.name.toLowerCase(), (p.icon || '').toLowerCase());
+    });
+    if (candidates.length === 0) return null;
+
+    candidates.sort((a, b) => {
+      const aExact = a.id.toLowerCase() === spec.key ? 1 : 0;
+      const bExact = b.id.toLowerCase() === spec.key ? 1 : 0;
+      const aCount = serviceCountMap.get(a.id) ?? a.serviceCount ?? 0;
+      const bCount = serviceCountMap.get(b.id) ?? b.serviceCount ?? 0;
+      // Prefer exact canonical ID when it has active services (e.g. telegram, instagram, youtube, facebook),
+      // otherwise pick the matching active category with the most API-connected services (e.g. twitter-x vs x).
+      if (aExact !== bExact) {
+        if (aExact && aCount > 0) return -1;
+        if (bExact && bCount > 0) return 1;
+      }
+      return bCount - aCount;
+    });
+
+    const chosen = candidates[0];
+    usedIds.add(chosen.id);
+    return {
+      ...chosen,
+      shortName: chosen.shortName || spec.fallbackLabel,
+    };
+  }).filter((p): p is NonNullable<typeof p> => p !== null);
+
+  if (corePlatforms.length < 6) {
+    for (const extra of nonSpecialPlatforms) {
+      if (usedIds.has(extra.id)) continue;
+      corePlatforms.push(extra);
+      usedIds.add(extra.id);
+      if (corePlatforms.length >= 6) break;
+    }
+  }
 
   const linkedinCategory = platforms.find((platform) => isLinkedInCategory(platform.id, platform.name));
   const webTrafficCategory = platforms.find((platform) => isWebTrafficCategory(platform.id, platform.name));
